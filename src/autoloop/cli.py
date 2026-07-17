@@ -24,6 +24,12 @@ def main():
     init_parser.add_argument(
         "--verify-cmd", default="uv run pytest", help="Verify command (default: uv run pytest)"
     )
+    init_parser.add_argument(
+        "--source", choices=["github", "linear"], default="github", help="Issue source backend"
+    )
+    init_parser.add_argument(
+        "--linear-team", default="", help="Linear team key (e.g. ENG) when --source linear"
+    )
     init_parser.add_argument("--dry-run", action="store_true", help="Preview without running")
     init_parser.add_argument("--skip-labels", action="store_true", help="Skip label creation")
 
@@ -81,7 +87,15 @@ def main():
     elif args.command == "init":
         from autoloop.init import run_init
 
-        run_init(args.repo, args.reviewer, args.verify_cmd, args.dry_run, args.skip_labels)
+        run_init(
+            args.repo,
+            args.reviewer,
+            args.verify_cmd,
+            args.dry_run,
+            args.skip_labels,
+            source=args.source,
+            linear_team=args.linear_team,
+        )
 
     elif args.command == "plan":
         from autoloop.config import load_config
@@ -154,27 +168,12 @@ def _show_status():
 
     import subprocess
 
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            cfg.repo,
-            "--label",
-            "ready",
-            "--state",
-            "open",
-            "--json",
-            "number",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        issues = json.loads(result.stdout)
+    from autoloop.sources import get_source
+
+    try:
+        issues = get_source(cfg).list_issues(labels=["ready"], state="open")
         print(f"Ready issues: {len(issues)}")
-    else:
+    except Exception:
         print("Ready issues: (could not query)")
 
     prefix = cfg.timer_prefix

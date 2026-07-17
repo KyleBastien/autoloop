@@ -435,10 +435,14 @@ def test_apply_rewrite_uses_cfg_repo():
 
         apply_rewrite(42, "new body", cfg)
 
-    assert len(calls) == 3
+    # One combined edit (body + remove-label) plus the auto-fix comment.
+    assert len(calls) == 2
     for call in calls:
         assert "--repo" in call
         assert call[call.index("--repo") + 1] == "acme/widgets"
+    edit = next(c for c in calls if c[:3] == ["gh", "issue", "edit"])
+    assert "--remove-label" in edit
+    assert "--body" in edit
 
 
 def test_create_sub_issues_uses_cfg_repo(monkeypatch):

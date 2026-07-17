@@ -7,8 +7,10 @@ Usage (from the target repo root):
 from __future__ import annotations
 
 import argparse
-import subprocess
+import os
 from pathlib import Path
+
+from autoloop.sources import GitHubSource, LinearSource
 
 LABELS = [
     ("ready", "0E8A16", "Triaged and ready for implementation"),
@@ -29,6 +31,12 @@ TOML_TEMPLATE = """\
 # Values here override dataclass defaults; env vars override these.
 
 repo = "{repo}"
+
+# Issue source backend: "github" or "linear".
+# For "linear", set linear_team to your team key and export LINEAR_API_KEY.
+# PRs, branches, and verification always run on GitHub.
+source = "{source}"
+linear_team = "{linear_team}"
 
 # Models
 triage_model = "sonnet"
@@ -129,19 +137,62 @@ jobs:
         run: autoloop auto-close-parent "${{{{ github.event.pull_request.number }}}}"
 """
 
+WORKFLOW_TEMPLATE_LINEAR = """\
+name: Autoloop Cleanup
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  auto-close-parent:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install autoloop
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v{version}
+      - name: Auto-close parent issue in Linear
+        env:
+          GH_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
+          LINEAR_API_KEY: ${{{{ secrets.LINEAR_API_KEY }}}}
+        run: autoloop auto-close-parent "${{{{ github.event.pull_request.number }}}}"
+"""
+
 GITIGNORE_ENTRY = "autoloop/run_history.jsonl"
 
 
-def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
+def write_toml(
+    target: Path,
+    repo: str,
+    reviewer: str,
+    verify_cmd: str,
+    source: str = "github",
+    linear_team: str = "",
+) -> None:
     path = target / "autoloop.toml"
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    path.write_text(TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_cmd=verify_cmd))
+    path.write_text(
+        TOML_TEMPLATE.format(
+            repo=repo,
+            reviewer=reviewer,
+            verify_cmd=verify_cmd,
+            source=source,
+            linear_team=linear_team,
+        )
+    )
     print("  created autoloop.toml")
 
 
-def write_workflow(target: Path) -> None:
+def write_workflow(target: Path, source: str = "github") -> None:
     from autoloop import __version__
 
     path = target / ".github" / "workflows" / "autoloop-cleanup.yml"
@@ -149,7 +200,8 @@ def write_workflow(target: Path) -> None:
     if path.exists():
         print("  workflow already exists, skipping (delete to regenerate)")
         return
-    path.write_text(WORKFLOW_TEMPLATE.format(version=__version__))
+    template = WORKFLOW_TEMPLATE_LINEAR if source == "linear" else WORKFLOW_TEMPLATE
+    path.write_text(template.format(version=__version__))
     print("  created .github/workflows/autoloop-cleanup.yml")
 
 
@@ -169,33 +221,21 @@ def update_gitignore(target: Path) -> None:
     print(f"  added {GITIGNORE_ENTRY} to .gitignore")
 
 
-def create_labels(repo: str, dry_run: bool = False) -> None:
-    for name, color, description in LABELS:
-        cmd = [
-            "gh",
-            "label",
-            "create",
-            name,
-            "--repo",
-            repo,
-            "--color",
-            color,
-            "--description",
-            description,
-            "--force",
-        ]
-        if dry_run:
-            print(f"  [dry-run] {' '.join(cmd)}")
-            continue
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"  created label: {name}")
-        else:
-            stderr = result.stderr.strip()
-            if "already exists" in stderr:
-                print(f"  label exists: {name}")
-            else:
-                print(f"  failed: {name} — {stderr}")
+def create_labels(
+    repo: str, dry_run: bool = False, source: str = "github", linear_team: str = ""
+) -> None:
+    if dry_run:
+        dest = f"Linear team {linear_team}" if source == "linear" else f"GitHub repo {repo}"
+        for name, _color, _description in LABELS:
+            print(f"  [dry-run] create label {name} in {dest}")
+        return
+    if source == "linear":
+        client = LinearSource(linear_team, os.environ.get("LINEAR_API_KEY", ""))
+    else:
+        client = GitHubSource(repo)
+    client.create_labels(LABELS)
+    for name, _color, _description in LABELS:
+        print(f"  label: {name}")
 
 
 def run_init(
@@ -204,24 +244,28 @@ def run_init(
     verify_cmd: str = "uv run pytest",
     dry_run: bool = False,
     skip_labels: bool = False,
+    source: str = "github",
+    linear_team: str = "",
 ) -> None:
     """Run the init scaffolding in the current directory."""
     target = Path.cwd()
 
-    print(f"Initializing autoloop for {repo} in {target}\n")
+    print(f"Initializing autoloop for {repo} (source: {source}) in {target}\n")
 
     print("Config:")
-    write_toml(target, repo, reviewer, verify_cmd)
+    write_toml(target, repo, reviewer, verify_cmd, source=source, linear_team=linear_team)
 
     print("\nWorkflow:")
-    write_workflow(target)
+    write_workflow(target, source=source)
 
     print("\nGitignore:")
     update_gitignore(target)
 
     if not skip_labels:
         print("\nLabels:")
-        create_labels(repo, dry_run=dry_run)
+        create_labels(repo, dry_run=dry_run, source=source, linear_team=linear_team)
+    if source == "linear":
+        print("\n  Note: add a LINEAR_API_KEY repo secret so the cleanup workflow can run.")
 
     print("\nDone! Next steps:")
     print("  1. Review autoloop.toml")
@@ -240,12 +284,26 @@ def main() -> None:
         "--verify-cmd", default="uv run pytest", help="Verify command (default: uv run pytest)"
     )
     parser.add_argument(
+        "--source", choices=["github", "linear"], default="github", help="Issue source backend"
+    )
+    parser.add_argument(
+        "--linear-team", default="", help="Linear team key (e.g. ENG) when --source linear"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print label commands without running"
     )
-    parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
+    parser.add_argument("--skip-labels", action="store_true", help="Skip label creation")
     args = parser.parse_args()
 
-    run_init(args.repo, args.reviewer, args.verify_cmd, args.dry_run, args.skip_labels)
+    run_init(
+        args.repo,
+        args.reviewer,
+        args.verify_cmd,
+        args.dry_run,
+        args.skip_labels,
+        source=args.source,
+        linear_team=args.linear_team,
+    )
 
 
 if __name__ == "__main__":

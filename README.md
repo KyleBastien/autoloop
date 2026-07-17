@@ -55,6 +55,7 @@ Contributions are currently limited to collaborators. A public issue board for i
 - **GitHub CLI (`gh`)** — [install](https://cli.github.com/) then run `gh auth login`
 - **Claude Code CLI (`claude`)** — [install](https://docs.anthropic.com/en/docs/claude-code/overview) (requires Claude Max or Pro subscription)
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
+- **Optional — Linear backlog:** a Linear API key (`LINEAR_API_KEY`) and team key if you set `source = "linear"` (see [Using Linear](#using-linear))
 
 ## Quick Start
 
@@ -322,7 +323,9 @@ Example workflow from your phone:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `repo` | — | GitHub `owner/repo` (required) |
+| `repo` | — | GitHub `owner/repo` (required; also the PR repo when `source = "linear"`) |
+| `source` | `github` | Issue source backend: `github` or `linear` |
+| `linear_team` | — | Linear team key (e.g. `ENG`), required when `source = "linear"` |
 | `triage_model` | `sonnet` | Claude model for triage |
 | `impl_model` | `claude-opus-4-6[1m]` | Claude model for implementation |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
@@ -337,7 +340,27 @@ Example workflow from your phone:
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 
-All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`).
+All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`, `AUTOLOOP_SOURCE`, `AUTOLOOP_LINEAR_TEAM`).
+
+## Using Linear
+
+Autoloop can triage and implement from a Linear backlog instead of GitHub issues. Code, branches, PRs, and verification always stay on GitHub — Linear is the backlog only.
+
+```bash
+export LINEAR_API_KEY=lin_api_...        # personal API key from Linear settings
+autoloop init --repo owner/repo --source linear --linear-team ENG --reviewer you
+```
+
+This sets `source = "linear"` and `linear_team = "ENG"` in `autoloop.toml`, creates the autoloop labels in that Linear team, and writes a cleanup workflow that closes parent issues in Linear on PR merge.
+
+Details:
+
+- **Auth** — set `LINEAR_API_KEY` in the environment where autoloop runs (and as a repo secret named `LINEAR_API_KEY` so the cleanup workflow can run in CI).
+- **Labels, not states** — the lifecycle labels (`ready`, `in-progress`, `in-review`, …) are plain Linear labels, mirroring the GitHub flow. Closing an issue moves it to the team's first completed workflow state.
+- **PR linking** — branches are named `autoloop/<identifier>-<slug>` (e.g. `autoloop/eng-123-add-flag`). Enable Linear's GitHub integration so the linked issue moves to Done on merge.
+- **References** — issue relationships use the same body-text convention as GitHub, with Linear identifiers: `Parent issue: ENG-120`, `Depends on: ENG-124`, `Closes ENG-123`.
+
+Only one source is active per repo. Everything else (`triage`, `implement`, `status`, `plan`, `fix-pr`, `auto-close-parent`) works the same way.
 
 ## Commands
 

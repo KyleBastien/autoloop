@@ -15,6 +15,8 @@ DEFAULT_CONFIG_PATH = Path.cwd() / "autoloop.toml"
 @dataclass
 class AutoLoopConfig:
     repo: str = "Sanctum-Origo-Systems/patina"
+    source: str = "github"
+    linear_team: str = ""
     triage_model: str = "sonnet"
     impl_model: str = "claude-opus-4-6[1m]"
     impl_timeout: int = 900
@@ -53,6 +55,8 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "AUTOLOOP_MAX_RETRIES": ("max_retries", int),
     "AUTOLOOP_MAX_STORY_POINTS": ("max_story_points", int),
     "AUTOLOOP_REPO": ("repo", str),
+    "AUTOLOOP_SOURCE": ("source", str),
+    "AUTOLOOP_LINEAR_TEAM": ("linear_team", str),
 }
 
 
@@ -71,6 +75,8 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     for key in (
         "repo",
+        "source",
+        "linear_team",
         "triage_model",
         "impl_model",
         "pr_reviewer",

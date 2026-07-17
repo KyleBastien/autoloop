@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR
 from autoloop.create_issue import build_issue_body
+from autoloop.sources import get_source
 
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
@@ -289,26 +290,7 @@ def load_project_context() -> tuple[str, str]:
 def list_untriaged_issues(cfg: AutoLoopConfig) -> list[dict]:
     """Fetch open issues that have no triage labels yet."""
     triage_labels = set(cfg.triage_labels)
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            cfg.repo,
-            "--state",
-            "open",
-            "--json",
-            "number,title,body,labels",
-            "--limit",
-            "50",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return []
-    issues = json.loads(result.stdout)
+    issues = get_source(cfg).list_issues(state="open", limit=50)
     return [
         i for i in issues if not any(lbl["name"] in triage_labels for lbl in i.get("labels", []))
     ]
@@ -360,37 +342,14 @@ def enrich_issue_with_files(number: int, files: list[dict], cfg: AutoLoopConfig)
     """Comment with discovered files so the implementation agent sees them."""
     file_lines = "\n".join(f"- `{f['path']}` — {f['reason']}" for f in files)
     comment = f"**Auto-triage — File Discovery:**\n\nIdentified files to modify:\n{file_lines}"
-    subprocess.run(
-        ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
-    )
+    get_source(cfg).comment(number, comment)
 
 
 def reject_issue(number: int, reason: str, cfg: AutoLoopConfig):
     """Label issue as rejected and comment with the reason."""
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--add-label",
-            "rejected",
-        ],
-    )
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--body",
-            f"**Auto-triage — Rejected:** {reason}",
-        ],
-    )
+    src = get_source(cfg)
+    src.edit_issue(number, add_labels=["rejected"])
+    src.comment(number, f"**Auto-triage — Rejected:** {reason}")
 
 
 def rewrite_issue_body(
@@ -406,63 +365,20 @@ def rewrite_issue_body(
 
 def apply_rewrite(number: int, body: str, cfg: AutoLoopConfig):
     """Update the issue body, drop the 'rejected' label, and note the auto-fix."""
-    subprocess.run(
-        ["gh", "issue", "edit", str(number), "--repo", cfg.repo, "--body", body],
-    )
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--remove-label",
-            "rejected",
-        ],
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--body",
-            "**Auto-triage — Auto-fix:** Rewrote the issue body to address the "
-            "rejection reason and re-triaging once.",
-        ],
+    src = get_source(cfg)
+    src.edit_issue(number, body=body, remove_labels=["rejected"])
+    src.comment(
+        number,
+        "**Auto-triage — Auto-fix:** Rewrote the issue body to address the "
+        "rejection reason and re-triaging once.",
     )
 
 
 def approve_issue(number: int, priority: str, reason: str, cfg: AutoLoopConfig):
     """Label issue as ready with priority and comment."""
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--add-label",
-            f"ready,{priority}",
-        ],
-    )
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--body",
-            f"**Auto-triage — Ready ({priority}):** {reason}",
-        ],
-    )
+    src = get_source(cfg)
+    src.edit_issue(number, add_labels=["ready", priority])
+    src.comment(number, f"**Auto-triage — Ready ({priority}):** {reason}")
 
 
 def suggest_sub_issue_fields(
@@ -496,11 +412,12 @@ def create_sub_issues(
     parent_summary: str = "",
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
-    step_to_issue: dict[int, int] = {}
-    created: list[int] = []
+    src = get_source(cfg)
+    step_to_issue: dict[int, int | str] = {}
+    created: list[int | str] = []
     for step in result.get("decomposition", []):
         dep_refs = [
-            f"#{step_to_issue[d]}" for d in step.get("depends_on", []) if d in step_to_issue
+            src.ref(step_to_issue[d]) for d in step.get("depends_on", []) if d in step_to_issue
         ]
         deps = "Depends on: " + ", ".join(dep_refs) if dep_refs else ""
 
@@ -520,29 +437,13 @@ def create_sub_issues(
             current_behavior="",
             expected=expected,
             extra_criteria=extra_criteria,
-            hints=f"Sub-issue of #{parent_number}. {why}".strip(),
+            hints=f"Sub-issue of {src.ref(parent_number)}. {why}".strip(),
             deps=deps,
-            context=f"Parent issue: #{parent_number}",
+            context=f"Parent issue: {src.ref(parent_number)}",
         )
 
-        proc = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "create",
-                "--repo",
-                cfg.repo,
-                "--title",
-                step["title"],
-                "--body",
-                body,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode == 0:
-            issue_url = proc.stdout.strip()
-            issue_num = int(issue_url.rstrip("/").split("/")[-1])
+        issue_num = src.create_issue(step["title"], body)
+        if issue_num is not None:
             step_to_issue[step["order"]] = issue_num
             created.append(issue_num)
 
@@ -556,45 +457,12 @@ def decompose_issue(
     parent_summary: str = "",
 ):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--add-label",
-            "needs-decomposition",
-        ],
-    )
-    comment = build_decomposition_comment(result)
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--body",
-            comment,
-        ],
-    )
+    src = get_source(cfg)
+    src.edit_issue(number, add_labels=["needs-decomposition"])
+    src.comment(number, build_decomposition_comment(result))
     sub_issues = create_sub_issues(number, result, cfg, parent_summary)
     if sub_issues:
-        subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(number),
-                "--repo",
-                cfg.repo,
-                "--body",
-                build_sub_issue_summary_comment(number, sub_issues),
-            ],
-        )
+        src.comment(number, build_sub_issue_summary_comment(number, sub_issues))
 
 
 # --- Orchestration ---
@@ -631,30 +499,12 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         mentioned_files = extract_files_from_spec(body)
         if touches_protected_path(mentioned_files, cfg.protected_paths):
             print(f"  #{issue['number']}: touches protected path, routing to needs-human")
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(issue["number"]),
-                    "--repo",
-                    cfg.repo,
-                    "--add-label",
-                    "needs-human",
-                ],
-            )
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "comment",
-                    str(issue["number"]),
-                    "--repo",
-                    cfg.repo,
-                    "--body",
-                    "**Auto-triage — needs-human:** issue targets protected paths"
-                    f" ({', '.join(mentioned_files)}). Requires manual implementation.",
-                ],
+            src = get_source(cfg)
+            src.edit_issue(issue["number"], add_labels=["needs-human"])
+            src.comment(
+                issue["number"],
+                "**Auto-triage — needs-human:** issue targets protected paths"
+                f" ({', '.join(mentioned_files)}). Requires manual implementation.",
             )
             return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)

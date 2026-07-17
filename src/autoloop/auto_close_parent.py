@@ -1,9 +1,10 @@
 """Auto-close a parent issue once all of its sub-issues are complete.
 
-Sub-issues carry a ``Parent issue: #N`` reference in their body. When the last
-open sub-issue of a parent is closed, the parent can be closed automatically
-with a summary comment. This module exposes the GitHub API helpers that the
-cleanup workflow invokes.
+Sub-issues carry a ``Parent issue: <ref>`` reference in their body. When the last
+open sub-issue of a parent is closed, the parent is closed automatically with a
+summary comment. Issues are read/written through the configured issue source
+(GitHub or Linear); the triggering PR always lives on GitHub, so its body is read
+directly via ``gh``.
 """
 
 from __future__ import annotations
@@ -13,188 +14,124 @@ import re
 import subprocess
 from typing import Protocol
 
+from autoloop.sources import get_source
 
-class _HasRepo(Protocol):
+_PARENT_RE = re.compile(r"Parent issue:\s*(#\d+|[A-Za-z][A-Za-z0-9]*-\d+)")
+_CLOSES_RE = re.compile(r"Closes\s+(#\d+|[A-Za-z][A-Za-z0-9]*-\d+)")
+
+
+class _HasRepoSource(Protocol):
     repo: str
+    source: str
 
 
-class GhClient:
-    """Thin wrapper over the ``gh`` CLI for issue lookup, close, and comment."""
-
-    def __init__(self, repo: str) -> None:
-        self.repo = repo
-
-    def list_open_issues(self) -> list[dict]:
-        """Return all open issues as dicts with ``number`` and ``body``."""
-        return self._list_issues("open")
-
-    def list_all_issues(self) -> list[dict]:
-        """Return all issues (open and closed) as dicts with ``number`` and ``body``."""
-        return self._list_issues("all")
-
-    def _list_issues(self, state: str) -> list[dict]:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                self.repo,
-                "--state",
-                state,
-                "--json",
-                "number,body",
-                "--limit",
-                "100",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return []
-        return json.loads(result.stdout)
-
-    def get_issue_body(self, number: int) -> str:
-        """Return the body of the given issue, or an empty string on failure."""
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "view",
-                str(number),
-                "--repo",
-                self.repo,
-                "--json",
-                "body",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return ""
-        return json.loads(result.stdout).get("body", "") or ""
-
-    def get_pr_body(self, number: int) -> str:
-        """Return the body of the given pull request, or an empty string on failure."""
-        result = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "view",
-                str(number),
-                "--repo",
-                self.repo,
-                "--json",
-                "body",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return ""
-        return json.loads(result.stdout).get("body", "") or ""
-
-    def close_issue(self, number: int) -> None:
-        """Set the given issue's state to closed."""
-        subprocess.run(
-            ["gh", "issue", "close", str(number), "--repo", self.repo],
-            capture_output=True,
-            text=True,
-        )
-
-    def comment_issue(self, number: int, body: str) -> None:
-        """Post a comment on the given issue."""
-        subprocess.run(
-            ["gh", "issue", "comment", str(number), "--repo", self.repo, "--body", body],
-            capture_output=True,
-            text=True,
-        )
+def get_pr_body(pr_number: int, repo: str) -> str:
+    """Return the body of the given pull request (always GitHub), or ''."""
+    result = subprocess.run(
+        ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "body"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return json.loads(result.stdout).get("body", "") or ""
 
 
-def parse_parent_ref(body: str) -> int | None:
-    """Extract the parent issue number from a ``Parent issue: #N`` reference."""
+def _coerce(token: str) -> int | str:
+    token = token.lstrip("#")
+    return int(token) if token.isdigit() else token
+
+
+def parse_parent_ref(body: str) -> int | str | None:
+    """Extract the parent issue ref from a ``Parent issue: <ref>`` line."""
     if not body:
         return None
-    match = re.search(r"Parent issue: #(\d+)", body)
-    return int(match.group(1)) if match else None
+    match = _PARENT_RE.search(body)
+    return _coerce(match.group(1)) if match else None
 
 
-def parse_closes_ref(body: str) -> int | None:
-    """Extract the issue number from a ``Closes #N`` reference in a PR body."""
+def parse_closes_ref(body: str) -> int | str | None:
+    """Extract the issue ref from a ``Closes <ref>`` reference in a PR body."""
     if not body:
         return None
-    match = re.search(r"Closes #(\d+)", body)
-    return int(match.group(1)) if match else None
+    match = _CLOSES_RE.search(body)
+    return _coerce(match.group(1)) if match else None
 
 
-def all_siblings_closed(gh: GhClient, parent_num: int) -> bool:
-    """Return True only when no open issue references ``Parent issue: #parent_num``."""
-    for issue in gh.list_open_issues():
-        if parse_parent_ref(issue.get("body", "") or "") == parent_num:
+def all_siblings_closed(source, parent_ref) -> bool:
+    """Return True only when no open issue references ``Parent issue: <parent_ref>``."""
+    for issue in source.list_issues(state="open", limit=100):
+        if parse_parent_ref(issue.get("body", "") or "") == parent_ref:
             return False
     return True
 
 
-def count_subissues(gh: GhClient, parent_num: int) -> int:
-    """Return the total number of issues referencing ``Parent issue: #parent_num``."""
+def count_subissues(source, parent_ref) -> int:
+    """Return the total number of issues referencing ``Parent issue: <parent_ref>``."""
     return sum(
         1
-        for issue in gh.list_all_issues()
-        if parse_parent_ref(issue.get("body", "") or "") == parent_num
+        for issue in source.list_issues(state="all", limit=100)
+        if parse_parent_ref(issue.get("body", "") or "") == parent_ref
     )
 
 
-def close_parent_with_comment(gh: GhClient, parent_num: int, sibling_count: int) -> None:
+def close_parent_with_comment(source, parent_ref, sibling_count: int) -> None:
     """Close the parent issue and post an auto-close summary comment."""
-    gh.close_issue(parent_num)
-    gh.comment_issue(
-        parent_num,
+    source.close_issue(parent_ref)
+    source.comment(
+        parent_ref,
         f"Auto-closed: All {sibling_count} sub-issues are now complete.",
     )
 
 
-def close_parent_chain(gh: GhClient, issue_number: int, max_depth: int = 5) -> list[int]:
+def _issue_body(source, ref) -> str:
+    issue = source.get_issue(ref)
+    return (issue.get("body", "") or "") if issue else ""
+
+
+def close_parent_chain(source, issue_ref, max_depth: int = 5) -> list:
     """Walk up the parent chain, closing each parent whose sub-issues are all done.
 
-    Returns a list of closed parent issue numbers (innermost first).
+    Returns a list of closed parent issue refs (innermost first).
     """
     closed = []
-    current = issue_number
+    current = issue_ref
     seen = set()
     for _ in range(max_depth):
-        parent_num = parse_parent_ref(gh.get_issue_body(current))
-        if parent_num is None or parent_num in seen:
+        parent_ref = parse_parent_ref(_issue_body(source, current))
+        if parent_ref is None or parent_ref in seen:
             break
-        seen.add(parent_num)
-        if not all_siblings_closed(gh, parent_num):
+        seen.add(parent_ref)
+        if not all_siblings_closed(source, parent_ref):
             break
-        close_parent_with_comment(gh, parent_num, count_subissues(gh, parent_num))
-        closed.append(parent_num)
-        current = parent_num
+        close_parent_with_comment(source, parent_ref, count_subissues(source, parent_ref))
+        closed.append(parent_ref)
+        current = parent_ref
     return closed
 
 
 def check_and_close_parent(
     pr_number: int,
-    gh: GhClient | None = None,
-    cfg: _HasRepo | None = None,
-) -> int | None:
+    source=None,
+    cfg: _HasRepoSource | None = None,
+) -> int | str | None:
     """Close parent issues when a merged PR completes its last open sub-issue.
 
-    Walks up the parent chain: if closing parent A reveals that A's parent B
-    also has all sub-issues closed, B is closed too. Returns the first closed
-    parent number, or None when nothing was modified.
+    Reads the (GitHub) PR body for its ``Closes <ref>`` link, then walks up the
+    parent chain closing each parent whose sub-issues are all closed. Returns the
+    first closed parent ref, or None when nothing was modified.
     """
-    if gh is None:
+    if source is None:
         if cfg is None:
-            raise ValueError("Either gh or cfg must be provided")
-        gh = GhClient(repo=cfg.repo)
+            raise ValueError("Either source or cfg must be provided")
+        source = get_source(cfg)
 
-    closed_issue = parse_closes_ref(gh.get_pr_body(pr_number))
+    pr_body = get_pr_body(pr_number, cfg.repo) if cfg is not None else ""
+    closed_issue = parse_closes_ref(pr_body)
     if closed_issue is None:
         return None
 
-    closed = close_parent_chain(gh, closed_issue)
+    closed = close_parent_chain(source, closed_issue)
     return closed[0] if closed else None
 
 

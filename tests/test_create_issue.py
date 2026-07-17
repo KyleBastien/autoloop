@@ -488,10 +488,13 @@ def test_update_issue_uses_cfg_repo():
     with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
         update_issue(7, "title", "body", cfg)
 
-    assert len(calls) == 2
-    for call in calls:
-        assert "--repo" in call
-        assert call[call.index("--repo") + 1] == "acme/widgets"
+    # Title, body, and remove-label now go through one combined edit.
+    assert len(calls) == 1
+    edit = calls[0]
+    assert edit[edit.index("--repo") + 1] == "acme/widgets"
+    assert "--title" in edit
+    assert "--body" in edit
+    assert "--remove-label" in edit
 
 
 def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch):

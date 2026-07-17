@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from autoloop.sources import get_source
+
 if TYPE_CHECKING:
     from autoloop.config import AutoLoopConfig
 
@@ -350,33 +352,15 @@ def create_issues_from_spec(
             print("---")
             continue
 
-        result = subprocess.run(
-            ["gh", "issue", "create", "--repo", cfg.repo, "--title", title, "--body", body],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(f"    Failed to create issue: {result.stderr.strip()}")
+        src = get_source(cfg)
+        issue_number = src.create_issue(title, body)
+        if issue_number is None:
+            print("    Failed to create issue.")
             continue
 
-        issue_url = result.stdout.strip()
-        issue_number = issue_url.rstrip("/").split("/")[-1]
-        print(f"    Created: {issue_url}")
+        print(f"    Created: {src.ref(issue_number)}")
 
-        detail_comment = f"**Implementation Detail:**\n\n{enh['body']}"
-        subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                issue_number,
-                "--repo",
-                cfg.repo,
-                "--body",
-                detail_comment,
-            ],
-            capture_output=True,
-        )
+        src.comment(issue_number, f"**Implementation Detail:**\n\n{enh['body']}")
         print("    Posted implementation detail comment.")
 
     print("\nDone.")
@@ -401,25 +385,12 @@ def parse_issue_sections(body: str) -> dict[str, str]:
 
 
 def fetch_issue(number: int, cfg: AutoLoopConfig) -> dict:
-    """Fetch an issue's title, body, labels, and comments from GitHub."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "title,body,labels,comments",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+    """Fetch an issue's title, body, labels, and comments."""
+    issue = get_source(cfg).get_issue(number, include_comments=True)
+    if issue is None:
         print(f"Failed to fetch issue #{number}.")
         sys.exit(1)
-    return json.loads(result.stdout)
+    return issue
 
 
 def get_rejection_reason(issue_data: dict) -> str | None:
@@ -520,34 +491,8 @@ def edit_issue(number: int, cfg: AutoLoopConfig) -> tuple[str, str]:
 
 
 def update_issue(number: int, title: str, body: str, cfg: AutoLoopConfig):
-    """Update the issue on GitHub and remove the rejected label."""
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--title",
-            title,
-            "--body",
-            body,
-        ],
-    )
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--remove-label",
-            "rejected",
-        ],
-        capture_output=True,
-    )
+    """Update the issue and remove the rejected label."""
+    get_source(cfg).edit_issue(number, title=title, body=body, remove_labels=["rejected"])
     print(f"Issue #{number} updated. 'rejected' label removed.")
 
 
@@ -715,11 +660,8 @@ def main():
             print(f"**Title:** {title}\n")
             print(body)
             return
-        result = subprocess.run(
-            ["gh", "issue", "create", "--repo", cfg.repo, "--title", title, "--body", body],
-            text=True,
-        )
-        if result.returncode == 0:
+        number = get_source(cfg).create_issue(title, body)
+        if number is not None:
             print("Issue created.")
         else:
             print("Failed to create issue. Printing markdown so you can copy-paste:\n")

@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR, load_config
+from autoloop.sources import get_source
 
 cfg = None
 
@@ -27,14 +28,15 @@ LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
 
 def parse_dependency_numbers(body: str) -> list[str]:
-    """Extract dependency issue numbers from issue body."""
-    return re.findall(r"Depends on:?\s*#(\d+)", body, re.IGNORECASE)
+    """Extract dependency issue refs (GitHub ``#N`` or Linear ``ABC-123``) from a body."""
+    matches = re.findall(r"Depends on:?\s*(#\d+|[A-Za-z][A-Za-z0-9]*-\d+)", body, re.IGNORECASE)
+    return [m.lstrip("#") for m in matches]
 
 
 def build_branch_name(issue: dict) -> str:
-    """Slugify issue into a branch name."""
+    """Slugify issue into a branch name (embeds the issue id for Linear auto-linking)."""
     slug = re.sub(r"[^a-z0-9]+", "-", issue["title"].lower()).strip("-")[:50]
-    return f"autoloop/{issue['number']}-{slug}"
+    return f"autoloop/{str(issue['number']).lower()}-{slug}"
 
 
 def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:
@@ -69,7 +71,7 @@ def build_pr_body(
 ) -> str:
     """Build the PR description markdown."""
     body = (
-        f"Closes #{issue['number']}\n\n"
+        f"Closes {get_source(cfg).ref(issue['number'])}\n\n"
         f"## Summary\n"
         f"{issue['title']}\n\n"
         f"## Test Plan\n"
@@ -162,11 +164,14 @@ def log_run(
 # --- Subprocess functions ---
 
 
-def parent_issue_number(issue: dict) -> int | None:
-    """Extract the parent issue number from a sub-issue body, if any."""
+def parent_issue_number(issue: dict) -> int | str | None:
+    """Extract the parent issue ref (``#N`` or ``ABC-123``) from a sub-issue body."""
     body = issue.get("body", "") or ""
-    match = re.search(r"Parent issue: #(\d+)", body)
-    return int(match.group(1)) if match else None
+    match = re.search(r"Parent issue:\s*(#\d+|[A-Za-z][A-Za-z0-9]*-\d+)", body)
+    if not match:
+        return None
+    token = match.group(1).lstrip("#")
+    return int(token) if token.isdigit() else token
 
 
 def priority_rank(issue: dict) -> int:
@@ -188,7 +193,7 @@ def select_top_issue(issues: list[dict]) -> dict | None:
     if not eligible:
         return None
 
-    groups: dict[int, list[dict]] = {}
+    groups: dict[int | str, list[dict]] = {}
     standalone: list[dict] = []
     for issue in eligible:
         parent = parent_issue_number(issue)
@@ -199,7 +204,10 @@ def select_top_issue(issues: list[dict]) -> dict | None:
 
     best_sub = None
     if groups:
-        best_parent = max(groups, key=lambda p: (len(groups[p]), -p))
+        # Prefer the largest group; on a tie, the lowest parent, then lowest sub id.
+        # min() over a homogeneous run (all int or all str ids) matches the old -p rule.
+        max_size = max(len(v) for v in groups.values())
+        best_parent = min(p for p, v in groups.items() if len(v) == max_size)
         best_sub = min(groups[best_parent], key=lambda i: i["number"])
 
     best_standalone = None
@@ -216,65 +224,22 @@ def select_top_issue(issues: list[dict]) -> dict | None:
 
 def get_top_ready_issue() -> dict | None:
     """Pick the top ready issue, grouping sub-issues by parent."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            cfg.repo,
-            "--label",
-            "ready",
-            "--state",
-            "open",
-            "--json",
-            "number,title,body,labels",
-            "--limit",
-            "10",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return select_top_issue(json.loads(result.stdout))
+    issues = get_source(cfg).list_issues(labels=["ready"], state="open", limit=10)
+    return select_top_issue(issues)
 
 
-def get_issue_by_number(number: int) -> dict | None:
+def get_issue_by_number(number) -> dict | None:
     """Fetch a specific issue by number, ignoring labels and story points."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "number,title,body,labels",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return json.loads(result.stdout)
+    return get_source(cfg).get_issue(number)
 
 
 def dependencies_met(issue: dict) -> bool:
     """Check if all issues in Dependencies field are closed."""
     body = issue.get("body", "") or ""
-    deps = parse_dependency_numbers(body)
-    for dep_num in deps:
-        result = subprocess.run(
-            ["gh", "issue", "view", dep_num, "--repo", cfg.repo, "--json", "state"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            state = json.loads(result.stdout).get("state", "")
-            if state != "CLOSED":
-                return False
+    src = get_source(cfg)
+    for dep_num in parse_dependency_numbers(body):
+        if src.get_state(dep_num) not in ("CLOSED", ""):
+            return False
     return True
 
 
@@ -291,23 +256,9 @@ def build_implementation_prompt(issue: dict) -> str:
     """Build the full prompt for the implementation agent."""
     claude_md = (REPO_DIR / "CLAUDE.md").read_text()
 
-    comments = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(issue["number"]),
-            "--repo",
-            cfg.repo,
-            "--json",
-            "body,comments",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    data = get_source(cfg).get_issue(issue["number"], include_comments=True)
     full_context = issue["body"] or ""
-    if comments.returncode == 0:
-        data = json.loads(comments.stdout)
+    if data:
         for c in data.get("comments", []):
             body = c.get("body", "")
             if any(
@@ -330,9 +281,10 @@ def build_implementation_prompt(issue: dict) -> str:
             metric_targets,
         )
 
+    issue_ref = get_source(cfg).ref(issue["number"])
     return (
         f"## Task\n\n"
-        f"Implement GitHub issue #{issue['number']}: {issue['title']}\n\n"
+        f"Implement issue {issue_ref}: {issue['title']}\n\n"
         f"## Issue Details\n\n{full_context}\n\n"
         f"## Project Conventions\n\n{claude_md}\n\n"
         f"## Implementation Checklist\n\n"
@@ -344,7 +296,7 @@ def build_implementation_prompt(issue: dict) -> str:
         f"6. If README.md needs updating (new tools, commands), update it\n"
         f"7. Stage and commit:\n"
         f"   `git add <specific files>`\n"
-        f"   `git commit -m '<type>: <description> (#{issue['number']})'\n"
+        f"   `git commit -m '<type>: <description> ({issue_ref})'\n"
         f"   Types: fix (bugs), feat (features), refactor\n"
         f"   Keep first line under 70 chars\n\n"
         f"## Rules\n\n"
@@ -397,32 +349,22 @@ def has_needs_design_label(issue: dict) -> bool:
     return "needs-design" in labels
 
 
-def has_design_comment(number: int) -> bool:
+def has_design_comment(number) -> bool:
     """Check the issue's comments for an existing Implementation Design."""
-    result = subprocess.run(
-        ["gh", "issue", "view", str(number), "--repo", cfg.repo, "--json", "comments"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+    data = get_source(cfg).get_issue(number, include_comments=True)
+    if not data:
         return False
-    data = json.loads(result.stdout)
     return any(DESIGN_COMMENT_MARKER in c.get("body", "") for c in data.get("comments", []))
 
 
-def post_design(number: int, design: str):
+def post_design(number, design: str):
     """Post the implementation design as a comment on the issue."""
-    comment = f"**{DESIGN_COMMENT_MARKER}**\n\n{design}"
-    subprocess.run(
-        ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
-    )
+    get_source(cfg).comment(number, f"**{DESIGN_COMMENT_MARKER}**\n\n{design}")
 
 
-def add_needs_design_label(number: int):
+def add_needs_design_label(number):
     """Add the 'needs-design' label to flag the issue for human review."""
-    subprocess.run(
-        ["gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", "needs-design"],
-    )
+    get_source(cfg).edit_issue(number, add_labels=["needs-design"])
 
 
 def design_gate(issue: dict, require_design: bool = False) -> bool:
@@ -450,12 +392,10 @@ def design_gate(issue: dict, require_design: bool = False) -> bool:
     return False
 
 
-def post_attempt_failure(number: int, attempt: int, errors: str):
+def post_attempt_failure(number, attempt: int, errors: str):
     """Post verification failure as a comment on the issue."""
     comment = f"**AutoLoop Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
-    subprocess.run(
-        ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
-    )
+    get_source(cfg).comment(number, comment)
 
 
 def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
@@ -615,7 +555,7 @@ def create_pr(
 ):
     """Create PR with conventional format."""
     issue_type = detect_issue_type(issue.get("body", ""))
-    title = f"{issue_type}: {issue['title'][:60]} (#{issue['number']})"
+    title = f"{issue_type}: {issue['title'][:60]} ({get_source(cfg).ref(issue['number'])})"
     body = build_pr_body(
         issue,
         attempts=attempts,
@@ -648,109 +588,32 @@ def create_pr(
 
 def unblock_ready_issues():
     """Re-check blocked issues and restore ready label if deps are met."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            cfg.repo,
-            "--label",
-            "blocked",
-            "--state",
-            "open",
-            "--json",
-            "number,title,body,labels",
-            "--limit",
-            "50",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return
-    for issue in json.loads(result.stdout):
+    src = get_source(cfg)
+    for issue in src.list_issues(labels=["blocked"], state="open", limit=50):
         if dependencies_met(issue):
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(issue["number"]),
-                    "--repo",
-                    cfg.repo,
-                    "--remove-label",
-                    "blocked",
-                    "--add-label",
-                    "ready",
-                ],
-            )
+            src.edit_issue(issue["number"], remove_labels=["blocked"], add_labels=["ready"])
             print(f"  Unblocked #{issue['number']}: {issue['title']}")
 
 
 def cleanup_merged_labels():
     """Remove in-review label from closed issues whose PR already merged."""
-    result = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            cfg.repo,
-            "--label",
-            "in-review",
-            "--state",
-            "closed",
-            "--json",
-            "number",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return
-    for issue in json.loads(result.stdout):
-        subprocess.run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(issue["number"]),
-                "--repo",
-                cfg.repo,
-                "--remove-label",
-                "in-review",
-            ],
-        )
+    src = get_source(cfg)
+    for issue in src.list_issues(labels=["in-review"], state="closed", limit=50):
+        src.edit_issue(issue["number"], remove_labels=["in-review"])
 
 
-def post_in_progress_comment(number: int):
+def post_in_progress_comment(number):
     """Comment on the issue noting the bot has started implementing it."""
-    comment = (
+    get_source(cfg).comment(
+        number,
         "**AutoLoop:** The implementation bot has started working on "
-        "this issue. It will open a PR when implementation is complete."
-    )
-    subprocess.run(
-        ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
+        "this issue. It will open a PR when implementation is complete.",
     )
 
 
-def label_in_review(number: int):
+def label_in_review(number):
     """Move issue from in-progress to in-review."""
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(number),
-            "--repo",
-            cfg.repo,
-            "--remove-label",
-            "in-progress",
-            "--add-label",
-            "in-review",
-        ],
-    )
+    get_source(cfg).edit_issue(number, remove_labels=["in-progress"], add_labels=["in-review"])
 
 
 # --- Orchestration ---
@@ -766,18 +629,7 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         mentioned_files = extract_files_from_spec(body)
         if touches_protected_path(mentioned_files, cfg.protected_paths):
             print(f"  #{issue['number']}: touches protected path, skipping.")
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(issue["number"]),
-                    "--repo",
-                    cfg.repo,
-                    "--add-label",
-                    "needs-human",
-                ],
-            )
+            get_source(cfg).edit_issue(issue["number"], add_labels=["needs-human"])
             return False
 
         ensure_clean_main()
@@ -792,19 +644,8 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
 
         print(f"Implementing #{issue['number']}: {issue['title']}")
 
-        subprocess.run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(issue["number"]),
-                "--repo",
-                cfg.repo,
-                "--remove-label",
-                "ready",
-                "--add-label",
-                "in-progress",
-            ],
+        get_source(cfg).edit_issue(
+            issue["number"], remove_labels=["ready"], add_labels=["in-progress"]
         )
         post_in_progress_comment(issue["number"])
 
@@ -844,21 +685,10 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
 
         if not success:
             print("  All retries exhausted. Labeling needs-human.")
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(issue["number"]),
-                    "--repo",
-                    cfg.repo,
-                    "--remove-label",
-                    "in-progress",
-                    "--add-label",
-                    "ready",
-                    "--add-label",
-                    "needs-human",
-                ],
+            get_source(cfg).edit_issue(
+                issue["number"],
+                remove_labels=["in-progress"],
+                add_labels=["ready", "needs-human"],
             )
             cleanup_branch(branch)
             log_run(

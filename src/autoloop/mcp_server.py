@@ -137,26 +137,13 @@ def main():
             active.append("triage")
         parts.append(f"Active: {', '.join(active)}" if active else "Active: idle")
 
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                cfg.repo,
-                "--label",
-                "ready",
-                "--state",
-                "open",
-                "--json",
-                "number",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            count = len(json.loads(result.stdout))
+        from autoloop.sources import get_source
+
+        try:
+            count = len(get_source(cfg).list_issues(labels=["ready"], state="open"))
             parts.append(f"Ready issues: {count}")
+        except Exception:
+            pass
 
         timers = _get_timer_info(cfg.timer_prefix)
         if timers:

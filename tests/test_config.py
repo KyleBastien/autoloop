@@ -106,6 +106,32 @@ def test_env_var_overrides_all_mapped_fields(autoloop_toml, monkeypatch):
     assert config.repo == "env-org/env-repo"
 
 
+def test_source_defaults_to_github():
+    config = AutoLoopConfig()
+    assert config.source == "github"
+    assert config.linear_team == ""
+
+
+def test_source_and_linear_team_load_from_toml(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_SOURCE", "AUTOLOOP_LINEAR_TEAM"):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('source = "linear"\nlinear_team = "ENG"\n')
+    config = load_config(toml_path)
+    assert config.source == "linear"
+    assert config.linear_team == "ENG"
+
+
+def test_source_env_overrides_toml(tmp_path, monkeypatch):
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('source = "github"\nlinear_team = "ENG"\n')
+    monkeypatch.setenv("AUTOLOOP_SOURCE", "linear")
+    monkeypatch.setenv("AUTOLOOP_LINEAR_TEAM", "OPS")
+    config = load_config(toml_path)
+    assert config.source == "linear"
+    assert config.linear_team == "OPS"
+
+
 def test_missing_toml_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="Config file not found"):
         load_config(tmp_path / "nonexistent.toml")
