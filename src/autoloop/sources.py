@@ -388,10 +388,14 @@ class LinearSource:
         for name, color, _description in labels:
             if name in existing:
                 continue
-            self._gql(
-                "mutation($i:IssueLabelCreateInput!){issueLabelCreate(input:$i){success}}",
-                {"i": {"teamId": team, "name": name, "color": f"#{color}"}},
-            )
+            try:
+                self._gql(
+                    "mutation($i:IssueLabelCreateInput!){issueLabelCreate(input:$i){success}}",
+                    {"i": {"teamId": team, "name": name, "color": f"#{color}"}},
+                )
+            except RuntimeError as e:
+                # Label management may be admin-gated; don't abort init on one label.
+                print(f"  could not create label {name}: {e}")
         self._label_ids = None  # force refresh on next use
 
 

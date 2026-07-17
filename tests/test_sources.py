@@ -278,6 +278,21 @@ def test_linear_ref_is_identifier():
     assert LinearSource("ENG", "key").ref("ENG-9") == "ENG-9"
 
 
+def test_linear_create_labels_survives_forbidden(capsys):
+    def dispatch(q, v=None):
+        if "teams" in q:
+            return {"teams": {"nodes": [{"id": "team-1"}]}}
+        if "issueLabels" in q:
+            return {"issueLabels": {"nodes": []}}
+        if "issueLabelCreate" in q:
+            raise RuntimeError("Linear API error: forbidden")
+        raise AssertionError(q)
+
+    # Must not raise even though label creation is denied.
+    _linear(dispatch).create_labels([("ready", "0E8A16", "desc")])
+    assert "could not create label ready" in capsys.readouterr().out
+
+
 # --------------------------------------------------------------------------- #
 # get_source factory
 # --------------------------------------------------------------------------- #
