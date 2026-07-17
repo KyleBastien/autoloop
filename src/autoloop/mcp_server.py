@@ -86,7 +86,7 @@ def main():
         )
 
     @server.tool()
-    def autoloop_implement(issue: int | None = None, max_issues: int = 1) -> str:
+    def autoloop_implement(issue: str | None = None, max_issues: int = 1) -> str:
         """Trigger autoloop implementation. Starts async, returns immediately."""
         cmd = ["autoloop", "implement"]
         if issue is not None:

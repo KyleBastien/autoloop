@@ -49,7 +49,9 @@ def main():
 
     # implement
     impl_parser = subparsers.add_parser("implement", help="Implement top ready issue")
-    impl_parser.add_argument("--issue", type=int, metavar="NUMBER", help="Specific issue number")
+    impl_parser.add_argument(
+        "--issue", metavar="ID", help="Specific issue: GitHub number or Linear id (e.g. ENG-42)"
+    )
     impl_parser.add_argument(
         "--max-issues", type=int, default=1, help="Max issues to implement (default: 1)"
     )

@@ -741,7 +741,7 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         return False
 
 
-def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
+def implement_targeted_issue(number, require_design: bool = False) -> bool:
     """Implement a specific issue by number, bypassing label and point checks."""
     issue = get_issue_by_number(number)
     if not issue:
