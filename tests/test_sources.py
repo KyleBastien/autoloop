@@ -10,6 +10,7 @@ from autoloop.sources import (
     LinearSource,
     first_ref,
     get_source,
+    linear_api_key,
     parse_refs,
 )
 
@@ -310,3 +311,28 @@ def test_get_source_caches(monkeypatch):
     sources._cache.clear()
     cfg = SimpleNamespace(source="github", repo="acme/widgets", linear_team="")
     assert get_source(cfg) is get_source(cfg)
+
+
+# --------------------------------------------------------------------------- #
+# linear_api_key: env wins, else <repo>/.env fallback
+# --------------------------------------------------------------------------- #
+
+
+def test_linear_api_key_env_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("LINEAR_API_KEY", "from-env")
+    (tmp_path / ".env").write_text("LINEAR_API_KEY=from-file\n")
+    monkeypatch.setattr(sources, "REPO_DIR", tmp_path)
+    assert linear_api_key() == "from-env"
+
+
+def test_linear_api_key_reads_env_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+    (tmp_path / ".env").write_text('FOO=bar\nexport LINEAR_API_KEY="lin_api_xyz"\n')
+    monkeypatch.setattr(sources, "REPO_DIR", tmp_path)
+    assert linear_api_key() == "lin_api_xyz"
+
+
+def test_linear_api_key_missing_returns_empty(monkeypatch, tmp_path):
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+    monkeypatch.setattr(sources, "REPO_DIR", tmp_path)  # no .env here
+    assert linear_api_key() == ""

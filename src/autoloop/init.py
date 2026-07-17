@@ -7,10 +7,9 @@ Usage (from the target repo root):
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
-from autoloop.sources import GitHubSource, LinearSource
+from autoloop.sources import GitHubSource, LinearSource, linear_api_key
 
 LABELS = [
     ("ready", "0E8A16", "Triaged and ready for implementation"),
@@ -33,7 +32,8 @@ TOML_TEMPLATE = """\
 repo = "{repo}"
 
 # Issue source backend: "github" or "linear".
-# For "linear", set linear_team to your team key and export LINEAR_API_KEY.
+# For "linear", set linear_team to your team key and provide LINEAR_API_KEY
+# via the environment or a LINEAR_API_KEY= line in a git-ignored .env file.
 # PRs, branches, and verification always run on GitHub.
 source = "{source}"
 linear_team = "{linear_team}"
@@ -205,20 +205,18 @@ def write_workflow(target: Path, source: str = "github") -> None:
     print("  created .github/workflows/autoloop-cleanup.yml")
 
 
-def update_gitignore(target: Path) -> None:
+def update_gitignore(target: Path, entries: tuple[str, ...] = (GITIGNORE_ENTRY,)) -> None:
     path = target / ".gitignore"
-    if path.exists():
-        content = path.read_text()
-        if GITIGNORE_ENTRY in content:
-            print(f"  .gitignore already has {GITIGNORE_ENTRY}")
-            return
-        if not content.endswith("\n"):
+    content = path.read_text() if path.exists() else ""
+    for entry in entries:
+        if entry in content:
+            print(f"  .gitignore already has {entry}")
+            continue
+        if content and not content.endswith("\n"):
             content += "\n"
-        content += GITIGNORE_ENTRY + "\n"
-        path.write_text(content)
-    else:
-        path.write_text(GITIGNORE_ENTRY + "\n")
-    print(f"  added {GITIGNORE_ENTRY} to .gitignore")
+        content += entry + "\n"
+        print(f"  added {entry} to .gitignore")
+    path.write_text(content)
 
 
 def create_labels(
@@ -230,7 +228,7 @@ def create_labels(
             print(f"  [dry-run] create label {name} in {dest}")
         return
     if source == "linear":
-        client = LinearSource(linear_team, os.environ.get("LINEAR_API_KEY", ""))
+        client = LinearSource(linear_team, linear_api_key())
     else:
         client = GitHubSource(repo)
     client.create_labels(LABELS)
@@ -259,13 +257,16 @@ def run_init(
     write_workflow(target, source=source)
 
     print("\nGitignore:")
-    update_gitignore(target)
+    # Linear keeps its API key in a git-ignored .env fallback.
+    entries = (GITIGNORE_ENTRY, ".env") if source == "linear" else (GITIGNORE_ENTRY,)
+    update_gitignore(target, entries)
 
     if not skip_labels:
         print("\nLabels:")
         create_labels(repo, dry_run=dry_run, source=source, linear_team=linear_team)
     if source == "linear":
-        print("\n  Note: add a LINEAR_API_KEY repo secret so the cleanup workflow can run.")
+        print("\n  Linear: set LINEAR_API_KEY in the environment or a .env file (git-ignored).")
+        print("  Also add a LINEAR_API_KEY repo secret so the cleanup workflow can run.")
 
     print("\nDone! Next steps:")
     print("  1. Review autoloop.toml")

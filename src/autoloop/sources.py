@@ -19,7 +19,26 @@ import subprocess
 import urllib.request
 from typing import Protocol, runtime_checkable
 
+from autoloop.config import REPO_DIR
+
 _REF_RE = re.compile(r"#(\d+)|\b([A-Z][A-Z0-9]*-\d+)\b")
+
+
+def linear_api_key() -> str:
+    """Return the Linear API key: env ``LINEAR_API_KEY`` wins, else a
+    ``LINEAR_API_KEY=`` line in ``<repo>/.env`` (git-ignored)."""
+    key = os.environ.get("LINEAR_API_KEY")
+    if key:
+        return key
+    env_file = REPO_DIR / ".env"
+    if env_file.exists():
+        for raw in env_file.read_text().splitlines():
+            line = raw.strip()
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if line.startswith("LINEAR_API_KEY="):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    return ""
 
 
 def parse_refs(text: str) -> list[str | int]:
@@ -389,7 +408,7 @@ def get_source(cfg) -> IssueSource:
     key = (source, getattr(cfg, "repo", ""), getattr(cfg, "linear_team", ""))
     if key not in _cache:
         if source == "linear":
-            _cache[key] = LinearSource(cfg.linear_team, os.environ.get("LINEAR_API_KEY", ""))
+            _cache[key] = LinearSource(cfg.linear_team, linear_api_key())
         else:
             _cache[key] = GitHubSource(cfg.repo)
     return _cache[key]

@@ -355,7 +355,7 @@ This sets `source = "linear"` and `linear_team = "ENG"` in `autoloop.toml`, crea
 
 Details:
 
-- **Auth** — set `LINEAR_API_KEY` in the environment where autoloop runs (and as a repo secret named `LINEAR_API_KEY` so the cleanup workflow can run in CI).
+- **Auth** — provide `LINEAR_API_KEY` either in the environment where autoloop runs, or as a `LINEAR_API_KEY=` line in a git-ignored `.env` file in the repo root (env wins). Also add it as a repo secret named `LINEAR_API_KEY` so the cleanup workflow can run in CI.
 - **Labels, not states** — the lifecycle labels (`ready`, `in-progress`, `in-review`, …) are plain Linear labels, mirroring the GitHub flow. Closing an issue moves it to the team's first completed workflow state.
 - **PR linking** — branches are named `autoloop/<identifier>-<slug>` (e.g. `autoloop/eng-123-add-flag`). Enable Linear's GitHub integration so the linked issue moves to Done on merge.
 - **References** — issue relationships use the same body-text convention as GitHub, with Linear identifiers: `Parent issue: ENG-120`, `Depends on: ENG-124`, `Closes ENG-123`.

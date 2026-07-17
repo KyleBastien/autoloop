@@ -11,6 +11,20 @@ def _run(tmp_path, monkeypatch, **kw):
     return toml, workflow
 
 
+def test_run_init_linear_gitignores_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_init("acme/widgets", skip_labels=True, source="linear", linear_team="ENG")
+    gitignore = (tmp_path / ".gitignore").read_text()
+    assert ".env" in gitignore
+
+
+def test_run_init_github_does_not_gitignore_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_init("acme/widgets", skip_labels=True)
+    gitignore = (tmp_path / ".gitignore").read_text()
+    assert ".env" not in gitignore
+
+
 def test_run_init_github_default(tmp_path, monkeypatch):
     toml, workflow = _run(tmp_path, monkeypatch)
     assert 'source = "github"' in toml
