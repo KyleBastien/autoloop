@@ -32,6 +32,8 @@ def test_run_init_github_default(tmp_path, monkeypatch):
     # GitHub variant keeps the label-cleanup github-script job.
     assert "github-script" in workflow
     assert "removeLabel" in workflow
+    # auto-close-parent must check out the repo so autoloop.toml is present.
+    assert "actions/checkout" in workflow
 
 
 def test_run_init_linear_variant(tmp_path, monkeypatch):
@@ -42,6 +44,7 @@ def test_run_init_linear_variant(tmp_path, monkeypatch):
     assert "github-script" not in workflow
     assert "LINEAR_API_KEY" in workflow
     assert "auto-close-parent" in workflow
+    assert "actions/checkout" in workflow
 
 
 def test_run_init_linear_workflow_renders_actions_expressions(tmp_path, monkeypatch):
