@@ -429,17 +429,15 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         cwd=REPO_DIR,
         timeout=cfg.test_timeout,
     )
+    # Use the configured lint command (covers format too); not hardcoded ruff,
+    # so non-Python repos (e.g. `pnpm run lint`) verify correctly.
     lint = subprocess.run(
-        ["uv", "run", "ruff", "check"],
+        cfg.lint_command,
+        shell=True,
         capture_output=True,
         text=True,
         cwd=REPO_DIR,
-    )
-    fmt = subprocess.run(
-        ["uv", "run", "ruff", "format", "--check", "."],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
+        timeout=cfg.test_timeout,
     )
     diff = subprocess.run(
         ["git", "diff", "--name-only", "main"],
@@ -454,7 +452,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         test_rc=tests.returncode,
         test_out=tests.stdout,
         lint_rc=lint.returncode,
-        fmt_rc=fmt.returncode,
+        fmt_rc=0,
         changed_files=changed,
         test_file_pattern=cfg.test_file_pattern,
     )
