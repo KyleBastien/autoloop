@@ -31,6 +31,9 @@ class AutoLoopConfig:
     spec_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
     lint_command: str = "uv run ruff check && uv run ruff format --check"
+    # Regex a changed file must match to count as a test (verify requires ≥1).
+    # Default is Python; JS/TS repos set e.g. r"\.(test|spec)\.[jt]sx?$".
+    test_file_pattern: str = r"^tests/.*\.py$"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
     triage_labels: list[str] = field(
@@ -57,6 +60,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "AUTOLOOP_REPO": ("repo", str),
     "AUTOLOOP_SOURCE": ("source", str),
     "AUTOLOOP_LINEAR_TEAM": ("linear_team", str),
+    "AUTOLOOP_TEST_FILE_PATTERN": ("test_file_pattern", str),
 }
 
 
@@ -82,6 +86,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "pr_reviewer",
         "verify_cmd",
         "lint_command",
+        "test_file_pattern",
         "timer_prefix",
     ):
         if key in data:

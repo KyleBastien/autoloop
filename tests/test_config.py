@@ -106,6 +106,18 @@ def test_env_var_overrides_all_mapped_fields(autoloop_toml, monkeypatch):
     assert config.repo == "env-org/env-repo"
 
 
+def test_test_file_pattern_default_is_python():
+    assert AutoLoopConfig().test_file_pattern == r"^tests/.*\.py$"
+
+
+def test_test_file_pattern_loads_from_toml(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTOLOOP_TEST_FILE_PATTERN", raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text(r'test_file_pattern = "\\.(test|spec)\\.[jt]sx?$"')
+    config = load_config(toml_path)
+    assert config.test_file_pattern == r"\.(test|spec)\.[jt]sx?$"
+
+
 def test_source_defaults_to_github():
     config = AutoLoopConfig()
     assert config.source == "github"

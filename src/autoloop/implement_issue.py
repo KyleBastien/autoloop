@@ -98,6 +98,7 @@ def collect_verification_errors(
     lint_rc: int,
     fmt_rc: int,
     changed_files: list[str],
+    test_file_pattern: str = r"^tests/.*\.py$",
 ) -> list[str]:
     """Build error list from verification subprocess results."""
     errors = []
@@ -107,7 +108,7 @@ def collect_verification_errors(
         errors.append(f"Tests failed:\n{test_out[-500:]}")
     if lint_rc != 0 or fmt_rc != 0:
         errors.append("Lint or format check failed")
-    test_files = [f for f in changed_files if f.startswith("tests/") and f.endswith(".py")]
+    test_files = [f for f in changed_files if re.search(test_file_pattern, f)]
     if not test_files:
         errors.append("No test files were added or modified")
     return errors
@@ -455,6 +456,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         lint_rc=lint.returncode,
         fmt_rc=fmt.returncode,
         changed_files=changed,
+        test_file_pattern=cfg.test_file_pattern,
     )
     if errors:
         return False, "\n".join(errors)

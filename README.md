@@ -335,6 +335,7 @@ Example workflow from your phone:
 | `max_retries` | `3` | Retry attempts per issue |
 | `max_story_points` | `2` | Issues above this are decomposed |
 | `verify_cmd` | `uv run pytest` | Command to validate implementation |
+| `test_file_pattern` | `^tests/.*\.py$` | Regex a changed file must match to count as a test (JS/TS: `\.(test\|spec)\.[jt]sx?$`) |
 | `lint_command` | `uv run ruff check && uv run ruff format --check` | Lint check command |
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |

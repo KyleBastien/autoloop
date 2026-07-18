@@ -194,6 +194,33 @@ def test_verification_no_test_files():
     assert "No test files were added or modified" in errors
 
 
+def test_verification_custom_test_pattern_ts():
+    # A TS repo: *.test.ts counts as a test file via a custom pattern.
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        fmt_rc=0,
+        changed_files=["packages/x/src/a.ts", "packages/x/src/a.test.ts"],
+        test_file_pattern=r"\.(test|spec)\.[jt]sx?$",
+    )
+    assert errors == []
+
+
+def test_verification_custom_test_pattern_no_match():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        fmt_rc=0,
+        changed_files=["packages/x/src/a.ts"],
+        test_file_pattern=r"\.(test|spec)\.[jt]sx?$",
+    )
+    assert "No test files were added or modified" in errors
+
+
 def test_verification_multiple_errors():
     errors = collect_verification_errors(
         ahead_count="0",
