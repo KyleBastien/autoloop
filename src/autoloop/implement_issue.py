@@ -223,9 +223,15 @@ def select_top_issue(issues: list[dict]) -> dict | None:
     return best_sub or best_standalone
 
 
-def get_top_ready_issue() -> dict | None:
-    """Pick the top ready issue, grouping sub-issues by parent."""
+def get_top_ready_issue(exclude: set | None = None) -> dict | None:
+    """Pick the top ready issue, grouping sub-issues by parent.
+
+    ``exclude`` skips issue numbers already attempted this run so a failing
+    issue doesn't get re-picked and stall the batch.
+    """
     issues = get_source(cfg).list_issues(labels=["ready"], state="open", limit=10)
+    if exclude:
+        issues = [i for i in issues if i["number"] not in exclude]
     return select_top_issue(issues)
 
 
@@ -685,10 +691,13 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
 
         if not success:
             print("  All retries exhausted. Labeling needs-human.")
+            # Drop 'ready' so a hopeless issue leaves the queue until a human
+            # intervenes — otherwise every scheduled run re-grinds it (3 attempts,
+            # real cost) and it keeps surfacing as the top ready issue.
             get_source(cfg).edit_issue(
                 issue["number"],
-                remove_labels=["in-progress"],
-                add_labels=["ready", "needs-human"],
+                remove_labels=["in-progress", "ready"],
+                add_labels=["needs-human"],
             )
             cleanup_branch(branch)
             log_run(
@@ -775,17 +784,19 @@ def main(issue=None, max_issues=1, require_design=False):
             return
 
         implemented = 0
+        attempted: set = set()
         while implemented < max_issues:
-            top_issue = get_top_ready_issue()
+            top_issue = get_top_ready_issue(exclude=attempted)
             if not top_issue:
                 print("No more ready issues.")
                 break
 
-            success = implement_single_issue(top_issue, require_design=require_design)
-            if success:
+            attempted.add(top_issue["number"])
+            if implement_single_issue(top_issue, require_design=require_design):
                 implemented += 1
-            else:
-                break
+            # On failure, continue to the next ready issue instead of stopping
+            # the batch. The failed issue is skipped (attempted) this run and,
+            # once labeled needs-human, drops out of the ready pool.
 
         print(f"\nImplemented {implemented} issue(s) this run.")
     finally:

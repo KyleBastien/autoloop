@@ -1064,7 +1064,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     issues = [{"number": 1, "title": "Issue one", "body": "", "labels": []}]
     call_count = [0]
 
-    def fake_get_top():
+    def fake_get_top(exclude=None):
         if call_count[0] < len(issues):
             return issues[call_count[0]]
         return None
@@ -1086,11 +1086,42 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     assert call_count[0] == 1
 
 
+def test_main_continues_past_failed_issue_to_reach_max(monkeypatch, tmp_path, capsys):
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    pool = [{"number": n, "title": f"#{n}", "body": "", "labels": []} for n in (1, 2, 3)]
+
+    def fake_get_top(exclude=None):
+        exclude = exclude or set()
+        remaining = [i for i in pool if i["number"] not in exclude]
+        return remaining[0] if remaining else None
+
+    attempted = []
+
+    def fake_single(issue, require_design=False):
+        attempted.append(issue["number"])
+        return issue["number"] != 1  # issue #1 fails; #2, #3 succeed
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_single)
+
+    implement_issue.cfg = None
+    implement_issue.main(max_issues=2)
+
+    # #1 failed but the batch continued to #2 and #3, reaching the target of 2.
+    assert attempted == [1, 2, 3]
+    assert "Implemented 2 issue(s) this run." in capsys.readouterr().out
+
+
 def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda exclude=None: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
