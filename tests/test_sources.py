@@ -320,6 +320,21 @@ def test_linear_gql_raises_on_non_transient(monkeypatch):
         LinearSource("ENG", "key")._gql("q", attempts=2)
 
 
+def test_linear_gql_retries_socket_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise TimeoutError("The read operation timed out")
+        return _Resp(json.dumps({"data": {"ok": 1}}).encode())
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sources.time, "sleep", lambda _s: None)
+    assert LinearSource("ENG", "key")._gql("q") == {"ok": 1}
+    assert calls["n"] == 2
+
+
 def test_linear_gql_gives_up_after_attempts(monkeypatch):
     calls = {"n": 0}
 

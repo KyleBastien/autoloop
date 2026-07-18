@@ -239,7 +239,9 @@ class LinearSource:
                     time.sleep(2**attempt)
                     continue
                 raise
-            except urllib.error.URLError:
+            except OSError:
+                # URLError, socket read TimeoutError, connection resets — all
+                # transient network faults. (HTTPError handled above.)
                 if attempt < attempts - 1:
                     time.sleep(2**attempt)
                     continue
