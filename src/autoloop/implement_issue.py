@@ -690,14 +690,14 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
 
         if not success:
-            print("  All retries exhausted. Labeling needs-human.")
-            # Drop 'ready' so a hopeless issue leaves the queue until a human
-            # intervenes — otherwise every scheduled run re-grinds it (3 attempts,
-            # real cost) and it keeps surfacing as the top ready issue.
+            print("  All retries exhausted. Flagging needs-human; keeping ready.")
+            # Keep 'ready' so the agent keeps taking swings at it on future runs
+            # (needs-human is just a visibility flag). Within a single run the
+            # attempted-set skip prevents re-picking it, so the batch still moves on.
             get_source(cfg).edit_issue(
                 issue["number"],
-                remove_labels=["in-progress", "ready"],
-                add_labels=["needs-human"],
+                remove_labels=["in-progress"],
+                add_labels=["ready", "needs-human"],
             )
             cleanup_branch(branch)
             log_run(
