@@ -419,6 +419,30 @@ def test_enrich_issue_with_files_uses_cfg_repo():
     assert calls[0][calls[0].index("--repo") + 1] == "acme/widgets"
 
 
+def test_main_continues_past_failing_issue(monkeypatch):
+    import autoloop.triage_issues as ti
+
+    calls = []
+
+    def fake_triage(issue, cfg):
+        calls.append(issue["number"])
+        if issue["number"] == 1:
+            raise RuntimeError("boom")
+        return [ClaudeResult("", 0, 0, 0, 0, success=True)]
+
+    monkeypatch.setattr("autoloop.config.load_config", lambda path=None: _cfg())
+    monkeypatch.setattr(ti, "list_untriaged_issues", lambda cfg: [
+        {"number": 1, "title": "a"},
+        {"number": 2, "title": "b"},
+    ])  # fmt: skip
+    monkeypatch.setattr(ti, "triage_issue", fake_triage)
+    monkeypatch.setattr(ti, "log_run", lambda *a, **k: None)
+
+    ti.main()  # must not raise despite issue #1 blowing up
+
+    assert calls == [1, 2]  # both attempted; the failure was isolated
+
+
 def test_apply_rewrite_uses_cfg_repo():
     cfg = _cfg(repo="acme/widgets")
     calls: list[list[str]] = []

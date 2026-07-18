@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import time
@@ -526,8 +527,13 @@ def main():
         print("No untriaged issues found.")
         return
     for issue in issues:
-        print(f"Triaging #{issue['number']}: {issue['title']}")
-        results.extend(triage_issue(issue, cfg))
+        print(f"Triaging #{issue['number']}: {issue['title']}", flush=True)
+        try:
+            results.extend(triage_issue(issue, cfg))
+        except Exception:
+            # One issue's failure (API blip, bad decomposition) must not abort
+            # the whole batch — the next scheduled run re-triages it.
+            logging.exception("triage failed for #%s", issue.get("number"))
 
     if results:
         elapsed = time.time() - start_time
