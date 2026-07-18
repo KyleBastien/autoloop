@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 import autoloop.sources as sources
 from autoloop.sources import (
@@ -276,6 +279,59 @@ def test_linear_close_issue_sets_done_state():
 
 def test_linear_ref_is_identifier():
     assert LinearSource("ENG", "key").ref("ENG-9") == "ENG-9"
+
+
+class _Resp:
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_linear_gql_retries_transient(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.HTTPError("u", 504, "Gateway Timeout", {}, None)
+        return _Resp(json.dumps({"data": {"ok": 1}}).encode())
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sources.time, "sleep", lambda _s: None)
+    assert LinearSource("ENG", "key")._gql("query{}") == {"ok": 1}
+    assert calls["n"] == 3  # two 504s, third succeeds
+
+
+def test_linear_gql_raises_on_non_transient(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sources.time, "sleep", lambda _s: None)
+    with pytest.raises(urllib.error.HTTPError):
+        LinearSource("ENG", "key")._gql("q", attempts=2)
+
+
+def test_linear_gql_gives_up_after_attempts(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError("u", 504, "Gateway Timeout", {}, None)
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sources.time, "sleep", lambda _s: None)
+    with pytest.raises(urllib.error.HTTPError):
+        LinearSource("ENG", "key")._gql("q", attempts=3)
+    assert calls["n"] == 3
 
 
 def test_linear_create_labels_survives_forbidden(capsys):

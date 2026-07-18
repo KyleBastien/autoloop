@@ -16,6 +16,8 @@ import json
 import os
 import re
 import subprocess
+import time
+import urllib.error
 import urllib.request
 from typing import Protocol, runtime_checkable
 
@@ -201,6 +203,7 @@ class GitHubSource:
 
 _LINEAR_URL = "https://api.linear.app/graphql"
 _CLOSED_TYPES = {"completed", "canceled"}
+_RETRY_STATUS = {429, 500, 502, 503, 504}  # transient; retry with backoff
 
 
 class LinearSource:
@@ -220,15 +223,27 @@ class LinearSource:
 
     # --- transport ---
 
-    def _gql(self, query: str, variables: dict | None = None) -> dict:
+    def _gql(self, query: str, variables: dict | None = None, *, attempts: int = 4) -> dict:
         payload = json.dumps({"query": query, "variables": variables or {}}).encode()
-        req = urllib.request.Request(
-            _LINEAR_URL,
-            data=payload,
-            headers={"Authorization": self.api_key, "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed https URL)
-            data = json.loads(resp.read())
+        headers = {"Authorization": self.api_key, "Content-Type": "application/json"}
+        for attempt in range(attempts):
+            req = urllib.request.Request(_LINEAR_URL, data=payload, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (fixed https)
+                    data = json.loads(resp.read())
+                break
+            except urllib.error.HTTPError as e:
+                # Retry transient gateway/rate-limit errors; a single blip must
+                # not abort a whole triage/implement batch.
+                if e.code in _RETRY_STATUS and attempt < attempts - 1:
+                    time.sleep(2**attempt)
+                    continue
+                raise
+            except urllib.error.URLError:
+                if attempt < attempts - 1:
+                    time.sleep(2**attempt)
+                    continue
+                raise
         if data.get("errors"):
             raise RuntimeError(f"Linear API error: {data['errors']}")
         return data["data"]
