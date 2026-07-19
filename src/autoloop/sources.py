@@ -202,7 +202,10 @@ class GitHubSource:
 # --------------------------------------------------------------------------- #
 
 _LINEAR_URL = "https://api.linear.app/graphql"
-_CLOSED_TYPES = {"completed", "canceled"}
+# Linear workflow-state *types* meaning the issue is not actionable. "duplicate"
+# is its own type in Linear (not "canceled"), so it must be listed explicitly or
+# duplicate-closed issues leak back in as OPEN (and get re-implemented).
+_CLOSED_TYPES = {"completed", "canceled", "duplicate"}
 _RETRY_STATUS = {429, 500, 502, 503, 504}  # transient; retry with backoff
 
 

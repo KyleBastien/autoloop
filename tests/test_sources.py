@@ -187,6 +187,13 @@ def test_linear_to_issue_completed_is_closed():
     assert LinearSource("ENG", "key")._to_issue(node)["state"] == "CLOSED"
 
 
+def test_linear_to_issue_duplicate_is_closed():
+    # Linear's Duplicate state has type "duplicate" (not "canceled") — must count
+    # as closed so duplicate-closed issues don't leak back in as ready.
+    node = {**_NODE, "state": {"type": "duplicate"}}
+    assert LinearSource("ENG", "key")._to_issue(node)["state"] == "CLOSED"
+
+
 def test_linear_num_from_identifier():
     assert LinearSource._num("ENG-123") == 123
     assert LinearSource._num(123) == 123
