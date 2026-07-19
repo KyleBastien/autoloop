@@ -25,7 +25,12 @@ from autoloop.create_issue import (
 
 
 def _cfg(**overrides):
-    defaults = {"repo": "test-owner/test-repo", "triage_model": "sonnet"}
+    defaults = {
+        "repo": "test-owner/test-repo",
+        "triage_model": "sonnet",
+        "verify_cmd": "uv run pytest",
+        "lint_command": "uv run ruff check && uv run ruff format --check",
+    }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
@@ -605,3 +610,35 @@ def test_build_issue_bug_prompts_current_behavior(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
     title, body = build_issue(cfg)
     assert "## Current Behavior\nIt crashes with IndexError" in body
+
+
+# --- config-based acceptance criteria ---
+
+
+def test_default_acceptance_uses_given_commands():
+    from autoloop.create_issue import default_acceptance
+
+    crit = default_acceptance("pnpm run build && pnpm run test", "pnpm run lint")
+    joined = "\n".join(crit)
+    assert "`pnpm run build && pnpm run test`" in joined
+    assert "`pnpm run lint`" in joined
+    assert "uv run" not in joined
+
+
+def test_build_issue_body_criteria_reference_config_commands():
+    body = build_issue_body(
+        summary="s",
+        issue_type="feature",
+        files="src/x.ts",
+        current_behavior="",
+        expected="e",
+        extra_criteria="",
+        hints="",
+        deps="",
+        context="",
+        verify_cmd="pnpm test",
+        lint_command="pnpm run lint",
+    )
+    assert "`pnpm test`" in body
+    assert "`pnpm run lint`" in body
+    assert "ruff" not in body and "uv run pytest" not in body

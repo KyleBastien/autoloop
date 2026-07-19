@@ -16,11 +16,23 @@ from autoloop.sources import get_source
 if TYPE_CHECKING:
     from autoloop.config import AutoLoopConfig
 
-DEFAULT_ACCEPTANCE = [
-    "New unit tests pass",
-    "All existing tests pass (`uv run pytest`)",
-    "`uv run ruff check && uv run ruff format --check` clean",
-]
+_DEFAULT_VERIFY_CMD = "uv run pytest"
+_DEFAULT_LINT_CMD = "uv run ruff check && uv run ruff format --check"
+
+
+def default_acceptance(
+    verify_cmd: str = _DEFAULT_VERIFY_CMD, lint_command: str = _DEFAULT_LINT_CMD
+) -> list[str]:
+    """The always-included acceptance criteria, referencing this repo's commands."""
+    return [
+        "New unit tests pass",
+        f"All existing tests pass (`{verify_cmd}`)",
+        f"`{lint_command}` clean",
+    ]
+
+
+# Back-compat constant (autoloop's own Python defaults); prefer default_acceptance(cfg…).
+DEFAULT_ACCEPTANCE = default_acceptance()
 
 VALID_TYPES = {"bug", "feature", "refactor"}
 
@@ -63,6 +75,8 @@ def build_issue_body(
     hints: str,
     deps: str,
     context: str,
+    verify_cmd: str = _DEFAULT_VERIFY_CMD,
+    lint_command: str = _DEFAULT_LINT_CMD,
 ) -> str:
     """Assemble the markdown issue body from field values."""
     sections = [f"## Summary\n{summary}", f"## Type\n{issue_type}"]
@@ -78,7 +92,7 @@ def build_issue_body(
 
     sections.append(f"## Expected Behavior\n{expected}")
 
-    criteria_lines = [f"- [ ] {c}" for c in DEFAULT_ACCEPTANCE]
+    criteria_lines = [f"- [ ] {c}" for c in default_acceptance(verify_cmd, lint_command)]
     if extra_criteria:
         for line in extra_criteria.split("\n"):
             line = line.strip().lstrip("- ").lstrip("[] ").strip()
@@ -342,6 +356,8 @@ def create_issues_from_spec(
             hints=f"See {spec_path} Enhancement {i} for the full spec.",
             deps=deps,
             context=f"Source spec: {spec_path}",
+            verify_cmd=cfg.verify_cmd,
+            lint_command=cfg.lint_command,
         )
 
         if dry_run:
@@ -457,10 +473,11 @@ def edit_issue(number: int, cfg: AutoLoopConfig) -> tuple[str, str]:
     expected = prompt_edit("Expected Behavior", sections.get("Expected Behavior", ""))
 
     existing_criteria = sections.get("Acceptance Criteria", "")
+    defaults = default_acceptance(cfg.verify_cmd, cfg.lint_command)
     extra_lines = []
     for line in existing_criteria.split("\n"):
         cleaned = line.strip().lstrip("- ").lstrip("[] ").lstrip("[ ] ").strip()
-        if cleaned and not any(d in cleaned for d in DEFAULT_ACCEPTANCE):
+        if cleaned and not any(d in cleaned for d in defaults):
             extra_lines.append(cleaned)
     extra_criteria = prompt_edit(
         "Additional Acceptance Criteria (beyond defaults)",
@@ -486,6 +503,8 @@ def edit_issue(number: int, cfg: AutoLoopConfig) -> tuple[str, str]:
         hints,
         deps,
         context,
+        verify_cmd=cfg.verify_cmd,
+        lint_command=cfg.lint_command,
     )
     return summary, body
 
@@ -535,7 +554,7 @@ def build_issue(
         )
 
         print("\nDefault acceptance criteria (always included):")
-        for item in DEFAULT_ACCEPTANCE:
+        for item in default_acceptance(cfg.verify_cmd, cfg.lint_command):
             print(f"  - [ ] {item}")
         s_criteria = "\n".join(suggestions.get("acceptance_criteria") or [])
         extra_criteria = prompt_edit(
@@ -568,7 +587,7 @@ def build_issue(
         expected = prompt_required("Expected Behavior")
 
         print("\nDefault acceptance criteria (always included):")
-        for item in DEFAULT_ACCEPTANCE:
+        for item in default_acceptance(cfg.verify_cmd, cfg.lint_command):
             print(f"  - [ ] {item}")
         extra_criteria = prompt_multiline(
             "Additional Acceptance Criteria",
@@ -590,6 +609,8 @@ def build_issue(
         hints,
         deps,
         context,
+        verify_cmd=cfg.verify_cmd,
+        lint_command=cfg.lint_command,
     )
     return summary, body
 

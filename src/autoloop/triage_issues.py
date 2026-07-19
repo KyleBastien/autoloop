@@ -442,6 +442,8 @@ def create_sub_issues(
             hints=f"Sub-issue of {src.ref(parent_number)}. {why}".strip(),
             deps=deps,
             context=f"Parent issue: {src.ref(parent_number)}",
+            verify_cmd=cfg.verify_cmd,
+            lint_command=cfg.lint_command,
         )
 
         issue_num = src.create_issue(step["title"], body)
