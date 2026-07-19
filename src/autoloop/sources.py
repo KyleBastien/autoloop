@@ -343,7 +343,7 @@ class LinearSource:
         data = self._gql(
             "query($filter:IssueFilter,$first:Int!){issues(first:$first,filter:$filter){"
             "nodes{identifier title description state{type} labels{nodes{name}}}}}",
-            {"filter": filt, "first": limit},
+            {"filter": filt, "first": min(limit, 250)},  # Linear caps first at 250
         )
         return [self._to_issue(n) for n in data["issues"]["nodes"]]
 
