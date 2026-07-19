@@ -4,11 +4,16 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import autoloop.triage_issues as triage_issues
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     build_triage_prompt,
+    create_sub_issues,
+    find_duplicate,
+    is_sub_issue,
+    parse_duplicate_response,
     parse_file_discovery_response,
     parse_rewritten_body,
     parse_sub_issue_response,
@@ -625,3 +630,109 @@ def test_log_run_writes_jsonl(tmp_path, monkeypatch):
     entry = json.loads(lines[0])
     assert entry["issue"] == 42
     assert entry["success"] is True
+
+
+# --- Dedup + decomposition-loop fix ---
+
+
+class _FakeSrc:
+    def __init__(self, issues=None):
+        self._issues = issues or []
+        self.created = []
+        self.edits = []
+        self.comments = []
+
+    def list_issues(self, *, labels=None, state="open", limit=50):
+        return self._issues
+
+    def create_issue(self, title, body):
+        n = 100 + len(self.created)
+        self.created.append(n)
+        return n
+
+    def edit_issue(self, number, **kw):
+        self.edits.append((number, kw))
+
+    def comment(self, number, body):
+        self.comments.append((number, body))
+
+    def ref(self, number):
+        return f"#{number}"
+
+
+def test_is_sub_issue():
+    assert is_sub_issue({"body": "x\nParent issue: #42\n"}) is True
+    assert is_sub_issue({"body": "no parent here"}) is False
+    assert is_sub_issue({}) is False
+
+
+def test_parse_duplicate_response():
+    assert parse_duplicate_response('{"duplicate_of": "#5"}', {"#5", "#6"}) == "#5"
+    assert parse_duplicate_response('{"duplicate_of": null}', {"#5"}) is None
+    # a ref not in the candidate set is rejected (no hallucinated matches)
+    assert parse_duplicate_response('{"duplicate_of": "#999"}', {"#5"}) is None
+    assert parse_duplicate_response("not json", {"#5"}) is None
+
+
+def test_find_duplicate_returns_ref_when_claude_confirms(monkeypatch):
+    cfg = _cfg()
+    src = _FakeSrc(issues=[{"number": 5, "title": "Add fetchWithRetry helper", "labels": []}])
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(
+        triage_issues,
+        "run_claude",
+        lambda *a, **k: ClaudeResult('{"duplicate_of": "#5"}', 0, 0, 0, 0, success=True),
+    )
+    ref, result = find_duplicate(
+        {"number": 9, "title": "Add fetchWithRetry helper", "body": ""}, cfg
+    )
+    assert ref == "#5"
+
+
+def test_find_duplicate_none_when_no_similar(monkeypatch):
+    cfg = _cfg()
+    src = _FakeSrc(
+        issues=[{"number": 5, "title": "Totally unrelated database migration", "labels": []}]
+    )
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    # prefilter should drop the dissimilar candidate → no Claude call, no dup
+    called = []
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: called.append(1))
+    ref, result = find_duplicate(
+        {"number": 9, "title": "Add fetchWithRetry helper", "body": ""}, cfg
+    )
+    assert ref is None
+    assert called == []
+
+
+def test_find_duplicate_skips_existing_duplicates(monkeypatch):
+    cfg = _cfg()
+    src = _FakeSrc(
+        issues=[
+            {"number": 5, "title": "Add fetchWithRetry helper", "labels": [{"name": "duplicate"}]}
+        ]
+    )
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: 1 / 0)  # must not be called
+    ref, _ = find_duplicate({"number": 9, "title": "Add fetchWithRetry helper", "body": ""}, cfg)
+    assert ref is None
+
+
+def test_create_sub_issues_labels_by_points(monkeypatch):
+    cfg = _cfg(max_story_points=2)
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
+
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "small step", "points": 1, "files": []},
+            {"order": 2, "title": "big step", "points": 5, "files": []},
+        ]
+    }
+    create_sub_issues(42, result, cfg)
+
+    # first sub-issue (1 pt) → ready; second (5 pt) → needs-human. Never left untriaged.
+    labels_by_issue = {num: kw.get("add_labels") for num, kw in src.edits}
+    assert labels_by_issue[100] == ["ready", "p2"]
+    assert labels_by_issue[101] == ["needs-human"]

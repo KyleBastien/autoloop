@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -447,6 +448,14 @@ def create_sub_issues(
         if issue_num is not None:
             step_to_issue[step["order"]] = issue_num
             created.append(issue_num)
+            # Label the sub-issue now from its own point estimate so it is NOT
+            # re-triaged (and re-decomposed into yet another near-identical
+            # child) on the next run. This is what stops the decomposition loop.
+            points = step.get("points", cfg.max_story_points + 1)
+            if points <= cfg.max_story_points:
+                src.edit_issue(issue_num, add_labels=["ready", "p2"])
+            else:
+                src.edit_issue(issue_num, add_labels=["needs-human"])
 
     return created
 
@@ -466,12 +475,124 @@ def decompose_issue(
         src.comment(number, build_sub_issue_summary_comment(number, sub_issues))
 
 
+# --- Dedup (avoid triaging/implementing the same work twice) ---
+
+DEDUP_PROMPT = """\
+You are deduplicating an engineering backlog. Decide whether the NEW issue is
+essentially the SAME work (same change, same outcome) as one of the EXISTING
+issues — not merely related or in the same area.
+
+NEW issue:
+{title}
+{body}
+
+EXISTING issues:
+{candidates}
+
+Respond with JSON only:
+{{"duplicate_of": "<exact id from the EXISTING list>" or null}}
+
+Only set duplicate_of when implementing the NEW issue would redo the EXISTING
+one. When in doubt, use null.
+"""
+
+_STOPWORDS = {"the", "a", "an", "to", "of", "in", "into", "and", "for", "with", "add", "+"}
+
+
+def _title_tokens(title: str) -> set[str]:
+    """Normalized significant word set of a title, for cheap similarity."""
+    words = re.findall(r"[a-z0-9]+", (title or "").lower())
+    return {w for w in words if w not in _STOPWORDS and len(w) > 2}
+
+
+def is_sub_issue(issue: dict) -> bool:
+    """True if the issue is itself a decomposition product (has a parent ref)."""
+    return bool(re.search(r"Parent issue:", issue.get("body") or ""))
+
+
+def parse_duplicate_response(text: str, valid_refs: set[str]) -> str | None:
+    """Extract a validated ``duplicate_of`` ref from Claude's dedup output."""
+    stripped = text.strip()
+    if "```" in stripped:
+        stripped = stripped.split("```")[1].replace("json", "").strip()
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, IndexError):
+        return None
+    ref = data.get("duplicate_of") if isinstance(data, dict) else None
+    return ref if ref in valid_refs else None
+
+
+def find_duplicate(issue: dict, cfg: AutoLoopConfig) -> tuple[str | None, ClaudeResult | None]:
+    """Return (canonical_ref, claude_result) if *issue* duplicates existing work.
+
+    Cheap title-token prefilter narrows the candidate set, then Claude confirms
+    true equivalence. Existing duplicate/rejected issues are never candidates.
+    """
+    src = get_source(cfg)
+    tokens = _title_tokens(issue.get("title", ""))
+    if not tokens:
+        return None, None
+
+    candidates = []
+    for other in src.list_issues(state="all", limit=100):
+        if str(other.get("number")) == str(issue.get("number")):
+            continue
+        labels = {lbl["name"] for lbl in other.get("labels", [])}
+        if labels & {"duplicate", "rejected"}:
+            continue
+        other_tokens = _title_tokens(other.get("title", ""))
+        if not other_tokens:
+            continue
+        overlap = len(tokens & other_tokens) / len(tokens | other_tokens)
+        if overlap >= 0.5:
+            candidates.append(other)
+    if not candidates:
+        return None, None
+    candidates = candidates[:12]
+
+    ref_by_num = {c["number"]: src.ref(c["number"]) for c in candidates}
+    prompt = DEDUP_PROMPT.format(
+        title=issue.get("title", ""),
+        body=(issue.get("body") or "")[:1000],
+        candidates="\n".join(
+            f"- {ref_by_num[c['number']]}: {c.get('title', '')}" for c in candidates
+        ),
+    )
+    result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
+    if not result.success:
+        return None, result
+    return parse_duplicate_response(result.text, set(ref_by_num.values())), result
+
+
+def mark_duplicate(number, canonical_ref: str, cfg: AutoLoopConfig):
+    """Label an issue a duplicate and comment with the canonical it duplicates."""
+    src = get_source(cfg)
+    src.edit_issue(number, add_labels=["duplicate"])
+    src.comment(
+        number,
+        f"**Auto-triage — Duplicate:** this appears to duplicate {canonical_ref}. "
+        "Not triaging or implementing it; close it if that's correct.",
+    )
+
+
 # --- Orchestration ---
 
 
 def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> list[ClaudeResult]:
     """Evaluate a single issue and apply the appropriate label."""
     results: list[ClaudeResult] = []
+
+    # Dedup guard: don't triage/implement work that already exists.
+    if auto_fix:  # only on the first pass, not the post-rewrite re-triage
+        dup_ref, dup_result = find_duplicate(issue, cfg)
+        if dup_result:
+            results.append(dup_result)
+        if dup_ref:
+            print(f"  #{issue['number']}: duplicate of {dup_ref}, skipping.")
+            mark_duplicate(issue["number"], dup_ref, cfg)
+            return results
+
     verdict, eval_result = evaluate_issue(issue, cfg)
     results.append(eval_result)
 
@@ -510,7 +631,18 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
-        decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
+        if is_sub_issue(issue):
+            # Already a decomposition product — recursing would spawn another
+            # near-identical child (the loop we're fixing). Send to a human.
+            src = get_source(cfg)
+            src.edit_issue(issue["number"], add_labels=["needs-human"])
+            src.comment(
+                issue["number"],
+                "**Auto-triage — needs-human:** this is already a sub-issue but is "
+                "still estimated too large; not decomposing further.",
+            )
+        else:
+            decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
 
     return results
 

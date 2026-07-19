@@ -62,7 +62,7 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.verify_cmd == "uv run pytest"
     assert config.lint_command == "uv run ruff check && uv run ruff format --check"
     assert config.max_story_points == 2
-    assert len(config.triage_labels) == 6
+    assert len(config.triage_labels) == 7
 
 
 def test_env_var_overrides_toml(autoloop_toml, monkeypatch):

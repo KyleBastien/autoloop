@@ -44,6 +44,7 @@ class AutoLoopConfig:
             "in-progress",
             "in-review",
             "needs-human",
+            "duplicate",
         ]
     )
 

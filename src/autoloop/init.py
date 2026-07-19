@@ -18,6 +18,7 @@ LABELS = [
     ("in-progress", "1D76DB", "Implementation in progress"),
     ("in-review", "BFD4F2", "PR open, awaiting review"),
     ("needs-human", "D4C5F9", "Blocked, requires human input"),
+    ("duplicate", "CFD3D7", "Duplicate of existing work; not implemented"),
     ("needs-design", "C2E0C6", "Requires design review before implementation"),
     ("design-required", "C2E0C6", "Issue requires a design doc"),
     ("p0", "B60205", "Critical priority"),
