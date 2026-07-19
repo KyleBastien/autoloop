@@ -70,13 +70,17 @@ def build_pr_body(
     output_tokens: int = 0,
 ) -> str:
     """Build the PR description markdown."""
-    body = (
-        f"Closes {get_source(cfg).ref(issue['number'])}\n\n"
-        f"## Summary\n"
+    src = get_source(cfg)
+    body = f"Closes {src.ref(issue['number'])}\n"
+    parent = parent_issue_number(issue)
+    if parent is not None:
+        body += f"Parent: {src.ref(parent)}\n"
+    body += (
+        f"\n## Summary\n"
         f"{issue['title']}\n\n"
         f"## Test Plan\n"
         f"- `{cfg.verify_cmd}` — all tests pass\n"
-        f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
+        f"- `{cfg.lint_command}` — clean\n\n"
     )
     if attempts > 0:
         body += (

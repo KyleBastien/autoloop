@@ -279,6 +279,27 @@ def test_build_pr_body_no_stats_when_zero_calls(monkeypatch):
     assert "AutoLoop Run Stats" not in body
 
 
+def test_build_pr_body_uses_cfg_lint_command_not_ruff(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(verify_cmd="pnpm test", lint_command="pnpm run lint")
+    )
+    body = build_pr_body({"number": 42, "title": "Add flag"})
+    assert "`pnpm run lint`" in body
+    assert "ruff" not in body
+
+
+def test_build_pr_body_links_parent_when_present(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    body = build_pr_body({"number": 42, "title": "T", "body": "x\nParent issue: #7\n"})
+    assert "Parent: #7" in body
+
+
+def test_build_pr_body_no_parent_line_when_absent(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    body = build_pr_body({"number": 42, "title": "T", "body": "no parent"})
+    assert "Parent:" not in body
+
+
 # --- Config-driven tests: subprocess calls use cfg.repo ---
 
 
