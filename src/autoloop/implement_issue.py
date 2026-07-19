@@ -634,6 +634,16 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
     try:
         from autoloop.config import touches_protected_path
         from autoloop.create_issue import extract_files_from_spec
+        from autoloop.triage_issues import find_duplicate, mark_duplicate
+
+        # Dedup safety net: the ready backlog can hold pre-existing duplicate
+        # pairs (both approved before triage-time dedup, or approved together).
+        # Catch them here before wasting an implement + opening a duplicate PR.
+        dup_ref, _dup_result = find_duplicate(issue, cfg)
+        if dup_ref:
+            print(f"  #{issue['number']}: duplicate of {dup_ref}, skipping.")
+            mark_duplicate(issue["number"], dup_ref, cfg)
+            return False
 
         body = issue.get("body") or ""
         mentioned_files = extract_files_from_spec(body)

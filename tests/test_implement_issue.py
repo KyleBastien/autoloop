@@ -1039,6 +1039,23 @@ def test_parse_review_response_strips_code_fence():
 # --- implement_targeted_issue tests ---
 
 
+def test_implement_single_issue_skips_duplicate(monkeypatch):
+    import autoloop.triage_issues as ti
+
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.setattr(ti, "find_duplicate", lambda issue, cfg: ("#5", None))
+    marked = []
+    monkeypatch.setattr(ti, "mark_duplicate", lambda n, ref, cfg: marked.append((n, ref)))
+    # Must bail before doing any real work.
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda i: (_ for _ in ()).throw(AssertionError)
+    )
+
+    result = implement_single_issue({"number": 9, "title": "dup", "body": "", "labels": []})
+    assert result is False
+    assert marked == [(9, "#5")]
+
+
 def test_implement_targeted_issue_bypasses_ready_and_points(monkeypatch, capsys):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     targeted = {"number": 28, "title": "Five point issue", "body": "", "labels": []}

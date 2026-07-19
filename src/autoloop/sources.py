@@ -108,7 +108,10 @@ class GitHubSource:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             return []
-        return json.loads(result.stdout)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
 
     def get_issue(self, number, *, include_comments=False) -> dict | None:
         fields = "number,title,body,labels"

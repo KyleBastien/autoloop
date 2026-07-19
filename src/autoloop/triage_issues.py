@@ -566,9 +566,9 @@ def find_duplicate(issue: dict, cfg: AutoLoopConfig) -> tuple[str | None, Claude
 
 
 def mark_duplicate(number, canonical_ref: str, cfg: AutoLoopConfig):
-    """Label an issue a duplicate and comment with the canonical it duplicates."""
+    """Label an issue a duplicate (dropping ready) and comment with the canonical."""
     src = get_source(cfg)
-    src.edit_issue(number, add_labels=["duplicate"])
+    src.edit_issue(number, add_labels=["duplicate"], remove_labels=["ready"])
     src.comment(
         number,
         f"**Auto-triage — Duplicate:** this appears to duplicate {canonical_ref}. "
