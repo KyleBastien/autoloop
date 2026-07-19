@@ -324,23 +324,22 @@ class LinearSource:
     # --- IssueSource interface ---
 
     def list_issues(self, *, labels=None, state="open", limit=50) -> list[dict]:
-        # ponytail: fetch team issues, filter labels/state client-side (small lists).
-        # `first` is a soft cap; very large backlogs beyond it are not paged.
-        data = self._gql(
-            "query($k:String!,$first:Int!){issues(first:$first,"
-            "filter:{team:{key:{eq:$k}}}){nodes{identifier title description "
-            "state{type} labels{nodes{name}}}}}",
-            {"k": self.team_key, "first": max(limit, 50)},
-        )
-        issues = [self._to_issue(n) for n in data["issues"]["nodes"]]
+        # Filter SERVER-SIDE (team + state + each required label) so `first`
+        # returns matching issues — not an arbitrary page we'd then filter down,
+        # which silently hid ready issues in backlogs larger than the page.
+        filt: dict = {"team": {"key": {"eq": self.team_key}}}
         if state == "open":
-            issues = [i for i in issues if i["state"] == "OPEN"]
+            filt["state"] = {"type": {"nin": list(_CLOSED_TYPES)}}
         elif state == "closed":
-            issues = [i for i in issues if i["state"] == "CLOSED"]
+            filt["state"] = {"type": {"in": list(_CLOSED_TYPES)}}
         if labels:
-            want = set(labels)
-            issues = [i for i in issues if want <= {lbl["name"] for lbl in i["labels"]}]
-        return issues[:limit]
+            filt["and"] = [{"labels": {"some": {"name": {"eq": lbl}}}} for lbl in labels]
+        data = self._gql(
+            "query($filter:IssueFilter,$first:Int!){issues(first:$first,filter:$filter){"
+            "nodes{identifier title description state{type} labels{nodes{name}}}}}",
+            {"filter": filt, "first": limit},
+        )
+        return [self._to_issue(n) for n in data["issues"]["nodes"]]
 
     def get_issue(self, number, *, include_comments=False) -> dict | None:
         node = self._node(number, include_comments=include_comments)

@@ -192,24 +192,33 @@ def test_linear_num_from_identifier():
     assert LinearSource._num(123) == 123
 
 
-def test_linear_list_issues_filters_state_and_labels():
-    nodes = [
-        _NODE,
-        {
-            **_NODE,
-            "identifier": "ENG-13",
-            "state": {"type": "completed"},
-            "labels": {"nodes": [{"name": "ready"}]},
-        },  # fmt: skip
-        {**_NODE, "identifier": "ENG-14", "labels": {"nodes": [{"name": "backlog"}]}},
-    ]
-    src = _linear(lambda q, v=None: {"issues": {"nodes": nodes}})
+def test_linear_list_issues_filters_server_side():
+    captured = {}
 
-    open_ready = src.list_issues(labels=["ready"], state="open")
-    assert [i["number"] for i in open_ready] == ["ENG-12"]
+    def dispatch(q, v=None):
+        captured["filter"] = v["filter"]
+        captured["first"] = v["first"]
+        return {"issues": {"nodes": [_NODE]}}
 
-    closed = src.list_issues(state="closed")
-    assert [i["number"] for i in closed] == ["ENG-13"]
+    src = _linear(dispatch)
+    result = src.list_issues(labels=["ready"], state="open", limit=10)
+
+    # Maps whatever the server returns (no client-side re-filtering).
+    assert [i["number"] for i in result] == ["ENG-12"]
+    # State + label + team pushed into the GraphQL filter, and first == limit.
+    assert captured["first"] == 10
+    assert captured["filter"]["team"]["key"]["eq"] == "ENG"
+    assert captured["filter"]["state"]["type"]["nin"] == list(sources._CLOSED_TYPES)
+    assert captured["filter"]["and"] == [{"labels": {"some": {"name": {"eq": "ready"}}}}]
+
+
+def test_linear_list_issues_closed_filter():
+    captured = {}
+    src = _linear(
+        lambda q, v=None: captured.update(filter=v["filter"]) or {"issues": {"nodes": []}}
+    )
+    src.list_issues(state="closed")
+    assert captured["filter"]["state"]["type"]["in"] == list(sources._CLOSED_TYPES)
 
 
 def test_linear_get_issue_and_state():
