@@ -74,7 +74,7 @@ def build_pr_body(
     body = f"Closes {src.ref(issue['number'])}\n"
     parent = parent_issue_number(issue)
     if parent is not None:
-        body += f"Parent: {src.ref(parent)}\n"
+        body += f"Parent: {src.ref_link(parent)}\n"
     body += (
         f"\n## Summary\n"
         f"{issue['title']}\n\n"

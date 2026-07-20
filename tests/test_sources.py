@@ -143,6 +143,10 @@ def test_github_ref():
     assert GitHubSource("acme/widgets").ref(42) == "#42"
 
 
+def test_github_ref_link_is_hash():
+    assert GitHubSource("acme/widgets").ref_link(42) == "#42"
+
+
 def test_github_create_labels_argv():
     calls, fake = _capture()
     with patch("autoloop.sources.subprocess.run", side_effect=fake):
@@ -295,6 +299,13 @@ def test_linear_close_issue_sets_done_state():
 
 def test_linear_ref_is_identifier():
     assert LinearSource("ENG", "key").ref("ENG-9") == "ENG-9"
+
+
+def test_linear_ref_link_builds_markdown_url():
+    src = _linear(lambda q, v=None: {"organization": {"urlKey": "pushpress"}})
+    assert (
+        src.ref_link("DANBOT-336") == "[DANBOT-336](https://linear.app/pushpress/issue/DANBOT-336)"
+    )
 
 
 class _Resp:

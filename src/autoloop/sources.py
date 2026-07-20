@@ -84,6 +84,7 @@ class IssueSource(Protocol):
     def comment(self, number, body: str) -> None: ...
     def close_issue(self, number) -> None: ...
     def ref(self, number) -> str: ...
+    def ref_link(self, number) -> str: ...  # clickable form for PR/comment bodies
     def create_labels(self, labels: list[tuple[str, str, str]]) -> None: ...
 
 
@@ -179,6 +180,10 @@ class GitHubSource:
     def ref(self, number) -> str:
         return f"#{number}"
 
+    def ref_link(self, number) -> str:
+        # GitHub auto-links same-repo #N in PR/issue bodies.
+        return f"#{number}"
+
     def create_labels(self, labels) -> None:
         for name, color, description in labels:
             subprocess.run(
@@ -226,6 +231,7 @@ class LinearSource:
         self._team_id: str | None = None
         self._label_ids: dict[str, str] | None = None
         self._done_state: str | None = None
+        self._workspace: str | None = None
 
     # --- transport ---
 
@@ -403,6 +409,16 @@ class LinearSource:
 
     def ref(self, number) -> str:
         return str(number)
+
+    def _workspace_key(self) -> str:
+        if self._workspace is None:
+            data = self._gql("query{organization{urlKey}}")
+            self._workspace = data["organization"]["urlKey"]
+        return self._workspace
+
+    def ref_link(self, number) -> str:
+        # GitHub won't auto-link a Linear id in a PR body — emit a markdown link.
+        return f"[{number}](https://linear.app/{self._workspace_key()}/issue/{number})"
 
     def create_labels(self, labels) -> None:
         team = self._team()
