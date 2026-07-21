@@ -760,6 +760,19 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         return True
     except Exception:
         logging.exception("implement_single_issue failed for #%s", issue.get("number"))
+        # Don't orphan the issue as in-progress on an unexpected crash: put it
+        # back to ready so a later run retries it, and clean up the branch.
+        try:
+            get_source(cfg).edit_issue(
+                issue["number"], remove_labels=["in-progress"], add_labels=["ready"]
+            )
+            branch_name = build_branch_name(issue)
+            if branch_name in subprocess.run(
+                ["git", "branch"], capture_output=True, text=True, cwd=REPO_DIR
+            ).stdout:
+                cleanup_branch(branch_name)
+        except Exception:
+            logging.exception("cleanup after failed #%s also failed", issue.get("number"))
         return False
 
 
