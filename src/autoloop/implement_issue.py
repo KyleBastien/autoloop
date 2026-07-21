@@ -431,24 +431,23 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         text=True,
         cwd=REPO_DIR,
     )
-    tests = subprocess.run(
-        cfg.verify_cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-        timeout=cfg.test_timeout,
-    )
+    # A verify command that times out is a FAILED ATTEMPT, not a run-killer:
+    # catch TimeoutExpired so the retry loop keeps going (it used to propagate
+    # to the outer except, abandoning the issue and skipping remaining retries).
+    def _run_check(cmd) -> tuple[int, str]:
+        try:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                cwd=REPO_DIR, timeout=cfg.test_timeout,
+            )
+            return r.returncode, r.stdout
+        except subprocess.TimeoutExpired:
+            return 1, f"`{cmd}` timed out after {cfg.test_timeout}s"
+
+    test_rc, test_out = _run_check(cfg.verify_cmd)
     # Use the configured lint command (covers format too); not hardcoded ruff,
     # so non-Python repos (e.g. `pnpm run lint`) verify correctly.
-    lint = subprocess.run(
-        cfg.lint_command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-        timeout=cfg.test_timeout,
-    )
+    lint_rc, _lint_out = _run_check(cfg.lint_command)
     diff = subprocess.run(
         ["git", "diff", "--name-only", "main"],
         capture_output=True,
@@ -459,9 +458,9 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
 
     errors = collect_verification_errors(
         ahead_count=ahead.stdout if ahead.returncode == 0 else "",
-        test_rc=tests.returncode,
-        test_out=tests.stdout,
-        lint_rc=lint.returncode,
+        test_rc=test_rc,
+        test_out=test_out,
+        lint_rc=lint_rc,
         fmt_rc=0,
         changed_files=changed,
         test_file_pattern=cfg.test_file_pattern,

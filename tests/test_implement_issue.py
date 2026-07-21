@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import autoloop.claude_runner as claude_runner
 import autoloop.implement_issue as implement_issue
@@ -1222,3 +1223,18 @@ def test_label_in_review_uses_cfg_repo(monkeypatch):
     implement_issue.label_in_review(42)
 
     assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+
+
+def test_verify_implementation_timeout_is_failed_attempt(monkeypatch):
+    # A verify timeout must be a failed attempt (retry continues), not raise.
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(verify_cmd="sleep 999", test_timeout=1))
+
+    def fake_run(cmd, **kw):
+        if isinstance(cmd, str):  # verify_cmd / lint_command
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, errors = implement_issue.verify_implementation("branch")
+    assert valid is False
+    assert "timed out" in errors
