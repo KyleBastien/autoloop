@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1
+
+- Skip decomposition when validation collapses to a single sub-issue; mark parent `ready` instead
+- Raise `max_story_points` default from 2 to 3; include in generated `autoloop.toml`
+
 ## v0.3.0
 
 - Multi-language support: triage and implementation prompts use project commands from config instead of hardcoded Python tools
