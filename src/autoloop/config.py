@@ -22,7 +22,7 @@ class AutoLoopConfig:
     test_timeout: int = 120
     pr_reviewer: str = "andywidjaja"
     max_retries: int = 3
-    max_story_points: int = 2
+    max_story_points: int = 3
     tree_truncation: int = 3000
     diff_truncation: int = 8000
     error_truncation: int = 2000

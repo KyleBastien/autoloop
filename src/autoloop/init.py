@@ -47,6 +47,9 @@ pr_reviewer = "{reviewer}"
 verify_cmd = "{verify_cmd}"
 test_pattern = "{test_pattern}"  # glob pattern matching test files — inferred from verify_cmd
 
+# Decomposition threshold — issues above this trigger sub-issue creation
+max_story_points = 3
+
 # Retry / truncation limits
 max_retries = 3
 tree_truncation = 3000
