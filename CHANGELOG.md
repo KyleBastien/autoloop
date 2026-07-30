@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2
+
+- Pin `mcp<2` to fix broken MCP server import with mcp v2.0.0
+
 ## v0.3.1
 
 - Skip decomposition when validation collapses to a single sub-issue; mark parent `ready` instead
