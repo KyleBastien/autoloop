@@ -1367,6 +1367,237 @@ def test_decompose_issue_closes_parent_after_children(monkeypatch):
 # --- SUB_ISSUE_PROMPT uses project commands ---
 
 
+def test_decompose_issue_collapsed_to_one_approves_instead(monkeypatch):
+    """When validation merges all steps into 1, decompose_issue should approve the parent."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "priority": "p1",
+        "reason": "large issue",
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Fix A",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+            },
+            {
+                "order": 2,
+                "title": "Fix B",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert len(label_calls) == 1
+    label_value = label_calls[0][label_calls[0].index("--add-label") + 1]
+    assert "ready" in label_value
+    assert "p1" in label_value
+    assert "needs-decomposition" not in label_value
+
+    comment_calls = [c for c in calls if "comment" in c and "--body" in c]
+    assert len(comment_calls) == 1
+    body = comment_calls[0][comment_calls[0].index("--body") + 1]
+    assert "collapsed to a single unit" in body
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+    close_calls = [c for c in calls if "close" in c]
+    assert len(close_calls) == 0
+
+
+def test_decompose_issue_collapsed_uses_default_priority(monkeypatch):
+    """When result has no priority, collapsed decomposition defaults to p2."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {"order": 1, "title": "All work", "points": 1, "depends_on": [], "files": ["a.py"]},
+            {"order": 2, "title": "Same file", "points": 1, "depends_on": [], "files": ["a.py"]},
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    label_value = label_calls[0][label_calls[0].index("--add-label") + 1]
+    assert "p2" in label_value
+
+
+def test_decompose_issue_two_steps_still_decomposes(monkeypatch):
+    """When validation keeps 2+ steps, decompose_issue should proceed normally."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 3,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+            {
+                "order": 2,
+                "title": "Step 2",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/b.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 2
+
+
+def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
+    """End-to-end: triage_issue with decomposition that collapses to 1 step."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 5,
+                    "priority": "p1",
+                    "reason": "needs splitting",
+                    "decomposition": [
+                        {
+                            "order": 1,
+                            "title": "Part A",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                        {
+                            "order": 2,
+                            "title": "Part B",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                        {
+                            "order": 3,
+                            "title": "Part C",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 0
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue({"number": 42, "title": "Big issue", "body": "Root issue."}, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+    close_calls = [c for c in calls if "close" in c]
+    assert len(close_calls) == 0
+
+    comment_calls = [c for c in calls if "comment" in c and "--body" in c]
+    body_texts = [c[c.index("--body") + 1] for c in comment_calls]
+    assert any("collapsed to a single unit" in b for b in body_texts)
+
+
+# --- SUB_ISSUE_PROMPT uses project commands ---
+
+
 def test_sub_issue_prompt_has_no_hardcoded_python_commands():
     assert "uv run pytest" not in SUB_ISSUE_PROMPT
     assert "uv run ruff" not in SUB_ISSUE_PROMPT
