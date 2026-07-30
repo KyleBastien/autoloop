@@ -61,7 +61,7 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.impl_timeout == 900
     assert config.verify_cmd == "uv run pytest"
     assert config.lint_command == ""
-    assert config.max_story_points == 2
+    assert config.max_story_points == 3
     assert len(config.triage_labels) == 6
 
 
