@@ -55,7 +55,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mcp", marker = "extra == 'mcp'" }]
+requires-dist = [{ name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2,<2" }]
 provides-extras = ["mcp"]
 
 [package.metadata.requires-dev]
