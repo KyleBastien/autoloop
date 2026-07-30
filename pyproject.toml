@@ -8,7 +8,7 @@ authors = [{ name = "Andy Widjaja" }]
 dependencies = []
 
 [project.optional-dependencies]
-mcp = ["mcp"]
+mcp = ["mcp>=1.2,<2"]
 
 [project.scripts]
 autoloop = "autoloop.cli:main"
