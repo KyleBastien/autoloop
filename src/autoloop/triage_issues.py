@@ -680,6 +680,18 @@ def decompose_issue(
     parent_summary: str = "",
 ):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
+    validated = dict(result)
+    validated["decomposition"] = validate_decomposition(result.get("decomposition", []))
+
+    if len(validated["decomposition"]) <= 1:
+        approve_issue(
+            number,
+            result.get("priority", "p2"),
+            "decomposition collapsed to a single unit; implementing as-is",
+            cfg,
+        )
+        return
+
     subprocess.run(
         [
             "gh",
@@ -692,8 +704,6 @@ def decompose_issue(
             "needs-decomposition",
         ],
     )
-    validated = dict(result)
-    validated["decomposition"] = validate_decomposition(result.get("decomposition", []))
     comment = build_decomposition_comment(validated)
     subprocess.run(
         [
