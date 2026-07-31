@@ -44,11 +44,17 @@ pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
 ### Upgrading
 
 ```bash
-# uv
+# uv for a specific version
 uv tool install --force git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>
 
-# pip
+# uv for the latest version
+uv tool install --force git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+
+# pip for a specific version
 pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>
+
+# pip for the latest version
+pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@main
 ```
 
 Verify: `autoloop version`
@@ -354,7 +360,7 @@ Example workflow from your phone:
 | `test_timeout` | `120` | Test command timeout (seconds) |
 | `pr_reviewer` | — | GitHub username assigned to PRs |
 | `max_retries` | `3` | Retry attempts per issue |
-| `max_story_points` | `2` | Issues above this are decomposed |
+| `max_story_points` | `3` | Issues above this are decomposed |
 | `verify_cmd` | `uv run pytest` | Command to validate implementation |
 | `lint_command` | `uv run ruff check && uv run ruff format --check` | Lint check command |
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
