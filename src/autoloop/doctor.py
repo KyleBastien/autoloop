@@ -95,6 +95,44 @@ def check_claude_session(repo_dir: Path | None = None) -> tuple[bool, str]:
     return True, "No active Claude Code session conflict"
 
 
+def check_verify_cmd(repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Run the repo's configured verify_cmd and report pass/fail."""
+    from autoloop.config import load_config
+
+    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    try:
+        cfg = load_config(config_path)
+    except Exception:
+        return False, "could not load autoloop.toml to read verify_cmd"
+
+    if not cfg.verify_cmd or not cfg.verify_cmd.strip():
+        return True, "verify_cmd not set, skipping"
+
+    try:
+        result = subprocess.run(
+            cfg.verify_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=cfg.test_timeout,
+            cwd=repo_dir or Path.cwd(),
+        )
+    except FileNotFoundError:
+        return False, f'verify_cmd command not found: "{cfg.verify_cmd}"'
+    except subprocess.TimeoutExpired:
+        return False, f'verify_cmd timed out after {cfg.test_timeout}s: "{cfg.verify_cmd}"'
+
+    if result.returncode == 0:
+        return True, f'verify_cmd passes ("{cfg.verify_cmd}" → exit 0)'
+
+    combined = (result.stdout + result.stderr).strip()
+    tail = combined[-500:] if len(combined) > 500 else combined
+    msg = f'verify_cmd failed ("{cfg.verify_cmd}" → exit {result.returncode})'
+    if tail:
+        msg += f"\n  Output: {tail}"
+    return False, msg
+
+
 def get_checks(repo_dir: Path | None = None) -> list[Check]:
     """Return the default set of doctor checks."""
     return [
@@ -127,6 +165,11 @@ def get_checks(repo_dir: Path | None = None) -> list[Check]:
             name="Claude Code session conflict",
             fn=lambda: check_claude_session(repo_dir),
             fix_hint="close the Claude Code session, or run it from a different directory",
+        ),
+        Check(
+            name="verify_cmd",
+            fn=lambda: check_verify_cmd(repo_dir),
+            fix_hint='resolve the error above, then re-run "autoloop doctor"',
         ),
     ]
 

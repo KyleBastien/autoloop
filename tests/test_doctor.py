@@ -14,6 +14,7 @@ from autoloop.doctor import (
     check_claude_session,
     check_claude_settings,
     check_gh_cli_installed,
+    check_verify_cmd,
     get_checks,
     run_checks,
 )
@@ -135,18 +136,22 @@ def test_check_claude_settings_missing(tmp_path):
 
 def test_get_checks_returns_registered_checks():
     checks = get_checks()
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
     assert checks[2].name == "claude CLI installed"
     assert checks[3].name == "claude CLI authenticated"
     assert checks[4].name == "gh CLI installed and authenticated"
     assert checks[5].name == "Claude Code session conflict"
+    assert checks[6].name == "verify_cmd"
+    assert "autoloop init" in checks[0].fix_hint
+    assert "autoloop init" in checks[1].fix_hint
+    assert "autoloop doctor" in checks[6].fix_hint
 
 
 def test_get_checks_all_pass(tmp_path, capsys):
     toml_file = tmp_path / "autoloop.toml"
-    toml_file.write_text('repo = "acme/widgets"\n')
+    toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "true"\n')
     settings_dir = tmp_path / ".claude"
     settings_dir.mkdir()
     (settings_dir / "settings.json").write_text("{}")
@@ -154,7 +159,7 @@ def test_get_checks_all_pass(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 6
+    assert len(results) == 7
     file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
     assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
@@ -165,7 +170,7 @@ def test_get_checks_all_fail(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 6
+    assert len(results) == 7
     out = capsys.readouterr().out
     assert "✗" in out
 
@@ -284,3 +289,68 @@ def test_check_claude_session_detection_unavailable(tmp_path):
         passed, msg = check_claude_session(tmp_path)
     assert passed is True
     assert "unavailable" in msg
+
+
+# --- verify_cmd check ---
+
+
+def test_check_verify_cmd_passes(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "true"\n')
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is True
+    assert "passes" in msg
+    assert "exit 0" in msg
+
+
+def test_check_verify_cmd_fails_with_output(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text(
+        'repo = "acme/widgets"\nverify_cmd = "echo build-error-output >&2 && exit 1"\n'
+    )
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is False
+    assert "failed" in msg
+    assert "exit 1" in msg
+    assert "build-error-output" in msg
+
+
+def test_check_verify_cmd_truncates_long_output(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    long_msg = "x" * 800
+    toml_file.write_text(f'repo = "acme/widgets"\nverify_cmd = "echo {long_msg} && exit 1"\n')
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is False
+    output_line = [line for line in msg.split("\n") if "Output:" in line][0]
+    output_text = output_line.split("Output: ", 1)[1]
+    assert len(output_text) <= 500
+
+
+def test_check_verify_cmd_not_found(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "nonexistent_command_abc123"\n')
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is False
+    assert "nonexistent_command_abc123" in msg
+
+
+def test_check_verify_cmd_empty(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\nverify_cmd = ""\n')
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is True
+    assert "skipping" in msg
+
+
+def test_check_verify_cmd_not_set(tmp_path):
+    toml_file = tmp_path / "autoloop.toml"
+    toml_file.write_text('repo = "acme/widgets"\nverify_cmd = "  "\n')
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is True
+    assert "skipping" in msg
+
+
+def test_check_verify_cmd_no_config(tmp_path):
+    passed, msg = check_verify_cmd(tmp_path)
+    assert passed is False
+    assert "could not load" in msg
