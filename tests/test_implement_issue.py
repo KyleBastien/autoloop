@@ -39,6 +39,7 @@ from autoloop.implement_issue import (
     release_lock,
     review_implementation,
     select_top_issue,
+    truncate_spec,
     unblock_ready_issues,
 )
 
@@ -1790,3 +1791,137 @@ def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "Active Claude Code session" not in out
     assert "No more ready issues." in out
+
+
+# --- truncate_spec tests ---
+
+
+def test_truncate_spec_no_truncation_when_under_limit():
+    body = "Short body"
+    assert truncate_spec(body, 100) == body
+
+
+def test_truncate_spec_no_truncation_when_exactly_at_limit():
+    body = "x" * 50
+    assert truncate_spec(body, 50) == body
+
+
+def test_truncate_spec_truncates_when_over_limit():
+    body = "a" * 100
+    result = truncate_spec(body, 50, "https://github.com/acme-corp/widget/issues/1")
+    assert result.startswith("a" * 50)
+    assert "[Issue body truncated." in result
+    assert "https://github.com/acme-corp/widget/issues/1" in result
+
+
+def test_truncate_spec_preserves_beginning():
+    body = "## Summary\nImportant info\n\n## Context\n" + "x" * 1000
+    result = truncate_spec(body, 40)
+    assert result.startswith("## Summary\nImportant info")
+
+
+def test_truncate_spec_omits_url_when_empty():
+    body = "a" * 100
+    result = truncate_spec(body, 50)
+    assert "[Issue body truncated.]" in result
+    assert "Full issue:" not in result
+
+
+def test_truncate_spec_includes_url_when_provided():
+    body = "a" * 100
+    result = truncate_spec(body, 50, "https://github.com/acme-corp/widget/issues/42")
+    assert "Full issue: https://github.com/acme-corp/widget/issues/42" in result
+
+
+def test_truncate_spec_zero_limit_returns_original():
+    body = "some text"
+    assert truncate_spec(body, 0) == body
+
+
+def test_truncate_spec_negative_limit_returns_original():
+    body = "some text"
+    assert truncate_spec(body, -1) == body
+
+
+# --- build_implementation_prompt applies spec_truncation ---
+
+
+def test_build_implementation_prompt_truncates_large_body(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=50, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    large_body = "a" * 200
+    issue = {"number": 7, "title": "Big issue", "body": large_body}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "a" * 200 not in prompt
+    assert "[Issue body truncated." in prompt
+    assert "https://github.com/acme-corp/widget/issues/7" in prompt
+
+
+def test_build_implementation_prompt_no_truncation_when_body_fits(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=4000, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    body = "Short issue body"
+    issue = {"number": 7, "title": "Small issue", "body": body}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Short issue body" in prompt
+    assert "[Issue body truncated." not in prompt
+
+
+def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, tmp_path):
+    """Truncation applies to the combined body + appended comments."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=100, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    comments_json = json.dumps(
+        {
+            "body": "short body",
+            "comments": [
+                {"body": "Implementation Detail: " + "x" * 200},
+            ],
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 7, "title": "Issue with comments", "body": "short body"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "[Issue body truncated." in prompt
+    assert "x" * 200 not in prompt

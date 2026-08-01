@@ -47,6 +47,18 @@ def build_branch_name(issue: dict) -> str:
     return f"autoloop/{issue['number']}-{slug}"
 
 
+def truncate_spec(body: str, max_chars: int, issue_url: str = "") -> str:
+    """Truncate an issue spec to *max_chars*, preserving the beginning."""
+    if max_chars <= 0 or len(body) <= max_chars:
+        return body
+    truncated = body[:max_chars]
+    note = "\n\n[Issue body truncated."
+    if issue_url:
+        note += f" Full issue: {issue_url}"
+    note += "]"
+    return truncated + note
+
+
 def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:
     """Strip **Metric Target:** lines from an issue body."""
     targets = []
@@ -436,6 +448,9 @@ def build_implementation_prompt(issue: dict) -> str:
             issue["number"],
             metric_targets,
         )
+
+    issue_url = f"https://github.com/{cfg.repo}/issues/{issue['number']}"
+    full_context = truncate_spec(full_context, cfg.spec_truncation, issue_url)
 
     prompt = (
         f"## Task\n\n"
