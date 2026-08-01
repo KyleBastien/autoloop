@@ -8,7 +8,7 @@ README = (REPO_ROOT / "README.md").read_text()
 
 class TestTldrQuickstart:
     def test_section_exists(self):
-        assert "## TLDR — First PR in 5 Minutes" in README
+        assert "## TLDR: First PR in 5 Minutes" in README
 
     def test_appears_before_detailed_content(self):
         tldr_idx = README.index("## TLDR")
@@ -53,7 +53,7 @@ class TestPlatformSupport:
         assert "**Linux**" in README
 
     def test_windows_unsupported(self):
-        assert "**Windows** — not supported" in README
+        assert "**Windows**: not supported" in README
 
 
 class TestModeFraming:

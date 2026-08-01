@@ -1476,6 +1476,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
 
     issues = [{"number": 1, "title": "Issue one", "body": "", "labels": []}]
     call_count = [0]
@@ -1506,6 +1507,7 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
@@ -1520,6 +1522,7 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
