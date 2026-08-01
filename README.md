@@ -2,6 +2,23 @@
 
 Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs — all from a single config file.
 
+## TLDR — First PR in 5 Minutes
+
+```bash
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+cd your-repo
+autoloop init --repo your-org/your-repo --verify-cmd "npm test"
+autoloop doctor                           # verify environment
+# Create a GitHub issue with a clear title and acceptance criteria
+autoloop triage                           # evaluates and labels the issue
+autoloop implement                        # builds it, opens a PR
+# Review and merge the PR
+```
+
+That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#3-create-an-issue).
+
+---
+
 ## Platform Support
 
 - **macOS** — fully supported (local mode)
