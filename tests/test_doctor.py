@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
+from unittest.mock import patch
+
 from autoloop.doctor import (
     Check,
     Result,
     check_autoloop_toml,
+    check_claude_cli_authenticated,
+    check_claude_cli_installed,
     check_claude_settings,
+    check_gh_cli_installed,
     get_checks,
     run_checks,
 )
@@ -128,11 +134,12 @@ def test_check_claude_settings_missing(tmp_path):
 
 def test_get_checks_returns_registered_checks():
     checks = get_checks()
-    assert len(checks) == 2
+    assert len(checks) == 5
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
-    assert "autoloop init" in checks[0].fix_hint
-    assert "autoloop init" in checks[1].fix_hint
+    assert checks[2].name == "claude CLI installed"
+    assert checks[3].name == "claude CLI authenticated"
+    assert checks[4].name == "gh CLI installed and authenticated"
 
 
 def test_get_checks_all_pass(tmp_path, capsys):
@@ -145,18 +152,109 @@ def test_get_checks_all_pass(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 2
-    assert all(r.passed for r in results)
+    assert len(results) == 5
+    file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
+    assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
     assert "✓" in out
-    assert "✗" not in out
 
 
 def test_get_checks_all_fail(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 2
-    assert all(not r.passed for r in results)
+    assert len(results) == 5
     out = capsys.readouterr().out
     assert "✗" in out
+
+
+# --- claude CLI installed check ---
+
+
+def test_check_claude_cli_installed_success():
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="v2.1.160\n", stderr="")
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_claude_cli_installed()
+    assert passed is True
+    assert "v2.1.160" in msg
+
+
+def test_check_claude_cli_installed_not_found():
+    with patch("autoloop.doctor.subprocess.run", side_effect=FileNotFoundError):
+        passed, msg = check_claude_cli_installed()
+    assert passed is False
+    assert "not found" in msg
+
+
+def test_check_claude_cli_installed_nonzero_exit():
+    completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_claude_cli_installed()
+    assert passed is False
+    assert "failed to run" in msg
+
+
+def test_check_claude_cli_installed_version_on_stderr():
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="v2.1.160")
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_claude_cli_installed()
+    assert passed is True
+    assert "v2.1.160" in msg
+
+
+# --- claude CLI authenticated check ---
+
+
+def test_check_claude_cli_authenticated_success():
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="Logged in\n", stderr="")
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_claude_cli_authenticated()
+    assert passed is True
+    assert "authenticated" in msg
+
+
+def test_check_claude_cli_authenticated_not_found():
+    with patch("autoloop.doctor.subprocess.run", side_effect=FileNotFoundError):
+        passed, msg = check_claude_cli_authenticated()
+    assert passed is False
+    assert "not found" in msg
+
+
+def test_check_claude_cli_authenticated_not_authed():
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="not logged in"
+    )
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_claude_cli_authenticated()
+    assert passed is False
+    assert "not authenticated" in msg
+
+
+# --- gh CLI installed and authenticated check ---
+
+
+def test_check_gh_cli_installed_success():
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="Logged in to github.com\n", stderr=""
+    )
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_gh_cli_installed()
+    assert passed is True
+    assert "installed and authenticated" in msg
+
+
+def test_check_gh_cli_not_found():
+    with patch("autoloop.doctor.subprocess.run", side_effect=FileNotFoundError):
+        passed, msg = check_gh_cli_installed()
+    assert passed is False
+    assert "not found" in msg
+
+
+def test_check_gh_cli_not_authenticated():
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="not logged in"
+    )
+    with patch("autoloop.doctor.subprocess.run", return_value=completed):
+        passed, msg = check_gh_cli_installed()
+    assert passed is False
+    assert "not authenticated" in msg

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,44 @@ def check_claude_settings(repo_dir: Path | None = None) -> tuple[bool, str]:
     return True, ".claude/settings.json found"
 
 
+def check_claude_cli_installed() -> tuple[bool, str]:
+    """Check that the claude CLI is installed."""
+    try:
+        result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return False, "claude CLI not found"
+    if result.returncode != 0:
+        return False, "claude CLI failed to run"
+    version = result.stdout.strip() or result.stderr.strip()
+    return True, f"claude CLI installed ({version})"
+
+
+def check_claude_cli_authenticated() -> tuple[bool, str]:
+    """Check that the claude CLI is authenticated."""
+    try:
+        result = subprocess.run(
+            ["claude", "auth", "status"], capture_output=True, text=True, timeout=10
+        )
+    except FileNotFoundError:
+        return False, "claude CLI not found"
+    if result.returncode != 0:
+        return False, "claude CLI not authenticated"
+    return True, "claude CLI authenticated"
+
+
+def check_gh_cli_installed() -> tuple[bool, str]:
+    """Check that the gh CLI is installed and authenticated."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
+        )
+    except FileNotFoundError:
+        return False, "gh CLI not found"
+    if result.returncode != 0:
+        return False, "gh CLI not authenticated"
+    return True, "gh CLI installed and authenticated"
+
+
 def get_checks(repo_dir: Path | None = None) -> list[Check]:
     """Return the default set of doctor checks."""
     return [
@@ -56,6 +95,21 @@ def get_checks(repo_dir: Path | None = None) -> list[Check]:
             name=".claude/settings.json",
             fn=lambda: check_claude_settings(repo_dir),
             fix_hint='run "autoloop init" to scaffold it, or create manually',
+        ),
+        Check(
+            name="claude CLI installed",
+            fn=check_claude_cli_installed,
+            fix_hint="npm install -g @anthropic-ai/claude-code",
+        ),
+        Check(
+            name="claude CLI authenticated",
+            fn=check_claude_cli_authenticated,
+            fix_hint='run "claude auth login"',
+        ),
+        Check(
+            name="gh CLI installed and authenticated",
+            fn=check_gh_cli_installed,
+            fix_hint='see https://cli.github.com for installation, then run "gh auth login"',
         ),
     ]
 
