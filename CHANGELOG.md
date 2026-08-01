@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.3
+
+- `autoloop doctor` command: validates environment, config, CLI auth, verify_cmd, and session conflicts before first run
+- Skip test-file gate for refactor/migration/docs issues instead of failing valid work
+- Truncate oversized issue bodies to `spec_truncation` limit with link to full issue
+- Actionable timeout error messages with fix suggestions posted to GitHub
+- README: TLDR quickstart section, doctor documentation, em dash cleanup
+
 ## v0.3.2
 
 - Pin `mcp<2` to fix broken MCP server import with mcp v2.0.0

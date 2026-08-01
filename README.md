@@ -40,7 +40,7 @@ Most users start local. Graduate to unattended when you trust it.
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.3.2`):
+Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.3.3`):
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -92,8 +92,10 @@ Contributions are currently limited to collaborators. A public issue board for i
 ## Prerequisites
 
 - **Python 3.13+**
+- **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
+- **Node.js 22+**: required by Claude Code CLI
 - **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
-- **Claude Code CLI (`claude`)**: [install](https://docs.anthropic.com/en/docs/claude-code/overview) (requires Claude Max or Pro subscription)
+- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
 ## Quick Start (Local Mode)
@@ -130,7 +132,27 @@ git push
 - Do not run `autoloop implement` while a Claude Code session is open in the
   same project directory. Close it or move the session to a parent folder.
 
-### 2. Configure
+### 2. Verify your environment
+
+```bash
+autoloop doctor
+```
+
+Checks that everything is set up correctly before your first run:
+
+```
+✓ autoloop.toml found and valid
+✓ .claude/settings.json found
+✓ claude CLI installed (v2.1.160)
+✓ claude CLI authenticated
+✓ gh CLI installed and authenticated
+✓ No active Claude Code session conflict
+✓ verify_cmd passes ("pytest" → exit 0)
+```
+
+Each check reports pass or fail with a fix suggestion. Exit code 0 if all pass, 1 if any fail. Run this once after `autoloop init` and again if implementations start failing unexpectedly.
+
+### 3. Configure
 
 Review `autoloop.toml` and adjust for your project. Key fields:
 
@@ -144,7 +166,7 @@ max_retries = 3                   # Retry attempts per issue
 protected_paths = ["autoloop.toml"]  # Files the bot must never modify
 ```
 
-### 3. Create an issue
+### 4. Create an issue
 
 Write a GitHub issue with clear structure. Autoloop works best with specific, testable issues.
 
@@ -175,7 +197,7 @@ You don't need to list which files to modify. Triage identifies the relevant fil
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
 
-### 4. Triage
+### 5. Triage
 
 ```bash
 autoloop triage
@@ -190,7 +212,7 @@ Triage evaluates each untriaged issue and applies a label:
 | `rejected` | Missing required fields (autoloop attempts to auto-fix and re-triage once) |
 | `needs-human` | Touches protected paths or requires human judgment |
 
-### 5. Implement
+### 6. Implement
 
 ```bash
 autoloop implement              # implements the top ready issue
@@ -206,11 +228,11 @@ For each issue, autoloop:
 5. Retries on failure (up to `max_retries`)
 6. Opens a PR with run stats (duration, cost, tokens)
 
-### 6. Review and merge
+### 7. Review and merge
 
 Autoloop opens the PR but never merges it. You review and merge. That's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
 
-### 7. Fix broken PRs
+### 8. Fix broken PRs
 
 ```bash
 autoloop fix-pr 42
@@ -392,6 +414,7 @@ All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL
 | Command | Description |
 |---------|-------------|
 | `autoloop init` | Scaffold autoloop onto a new repo |
+| `autoloop doctor` | Verify environment and configuration |
 | `autoloop plan` | Create issues from a spec file |
 | `autoloop triage` | Triage untriaged issues |
 | `autoloop implement` | Implement top ready issue |
