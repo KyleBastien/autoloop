@@ -6,6 +6,42 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 README = (REPO_ROOT / "README.md").read_text()
 
 
+class TestTldrQuickstart:
+    def test_section_exists(self):
+        assert "## TLDR — First PR in 5 Minutes" in README
+
+    def test_appears_before_detailed_content(self):
+        tldr_idx = README.index("## TLDR")
+        how_idx = README.index("## How It Works")
+        assert tldr_idx < how_idx
+
+    def test_quickstart_includes_init(self):
+        assert "autoloop init" in README[: README.index("## Platform Support")]
+
+    def test_quickstart_includes_doctor(self):
+        assert "autoloop doctor" in README[: README.index("## Platform Support")]
+
+    def test_quickstart_includes_triage(self):
+        assert "autoloop triage" in README[: README.index("## Platform Support")]
+
+    def test_quickstart_includes_implement(self):
+        assert "autoloop implement" in README[: README.index("## Platform Support")]
+
+    def test_ends_with_clear_outcome(self):
+        tldr_section = README[README.index("## TLDR") : README.index("## Platform Support")]
+        assert "Review and merge the PR" in tldr_section
+
+    def test_links_to_detailed_sections(self):
+        tldr_section = README[README.index("## TLDR") : README.index("## Platform Support")]
+        assert "#configuration" in tldr_section.lower() or "configuration" in tldr_section
+
+    def test_under_20_lines(self):
+        tldr_start = README.index("## TLDR")
+        tldr_end = README.index("---", tldr_start)
+        tldr_lines = README[tldr_start:tldr_end].strip().splitlines()
+        assert len(tldr_lines) <= 20
+
+
 class TestPlatformSupport:
     def test_section_exists(self):
         assert "## Platform Support" in README
