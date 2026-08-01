@@ -83,6 +83,18 @@ def check_gh_cli_installed() -> tuple[bool, str]:
     return True, "gh CLI installed and authenticated"
 
 
+def check_claude_session(repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Check if an active Claude Code session is running in the working directory."""
+    from autoloop.implement_issue import detect_active_claude_session
+
+    result = detect_active_claude_session(str(repo_dir) if repo_dir else None)
+    if result is True:
+        return False, "Active Claude Code session detected in this directory"
+    if result is None:
+        return True, "Session detection unavailable (pgrep not found), skipping"
+    return True, "No active Claude Code session conflict"
+
+
 def get_checks(repo_dir: Path | None = None) -> list[Check]:
     """Return the default set of doctor checks."""
     return [
@@ -110,6 +122,11 @@ def get_checks(repo_dir: Path | None = None) -> list[Check]:
             name="gh CLI installed and authenticated",
             fn=check_gh_cli_installed,
             fix_hint='see https://cli.github.com for installation, then run "gh auth login"',
+        ),
+        Check(
+            name="Claude Code session conflict",
+            fn=lambda: check_claude_session(repo_dir),
+            fix_hint="close the Claude Code session, or run it from a different directory",
         ),
     ]
 
