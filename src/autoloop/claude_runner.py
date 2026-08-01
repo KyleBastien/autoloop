@@ -19,6 +19,7 @@ class ClaudeResult:
     output_tokens: int
     cache_read_tokens: int
     success: bool
+    timed_out: bool = False
 
 
 def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
@@ -37,7 +38,7 @@ def run_claude(prompt: str, model: str, timeout: int) -> ClaudeResult:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return ClaudeResult("", 0, 0, 0, 0, success=False)
+        return ClaudeResult("", 0, 0, 0, 0, success=False, timed_out=True)
 
     if result.returncode != 0:
         return ClaudeResult("", 0, 0, 0, 0, success=False)

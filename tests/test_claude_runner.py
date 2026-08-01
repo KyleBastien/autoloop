@@ -89,7 +89,8 @@ def test_run_claude_timeout_returns_failure(monkeypatch):
 
     result = run_claude("p", "opus", 1)
 
-    assert result == ClaudeResult("", 0, 0, 0, 0, success=False)
+    assert result == ClaudeResult("", 0, 0, 0, 0, success=False, timed_out=True)
+    assert result.timed_out is True
 
 
 def test_run_claude_nonzero_exit_returns_failure(monkeypatch):
@@ -99,6 +100,7 @@ def test_run_claude_nonzero_exit_returns_failure(monkeypatch):
     result = run_claude("p", "opus", 10)
 
     assert result.success is False
+    assert result.timed_out is False
     assert result.cost_usd == 0
     assert result.input_tokens == 0
 

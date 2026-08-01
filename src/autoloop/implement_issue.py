@@ -593,6 +593,26 @@ def design_gate(issue: dict, require_design: bool = False) -> bool:
     return False
 
 
+def build_timeout_comment(attempt: int, timeout_seconds: int) -> str:
+    """Build an actionable guidance comment for implementation timeout."""
+    return (
+        f"**AutoLoop Attempt {attempt} failed: implementation timeout ({timeout_seconds}s)**\n\n"
+        f"Possible fixes:\n"
+        f"- Increase timeout: set `impl_timeout = {timeout_seconds * 2}` in autoloop.toml\n"
+        f"- Or set env var: `AUTOLOOP_TIMEOUT={timeout_seconds * 2}`\n"
+        f"- Decompose the issue into smaller sub-issues (target ≤ 2 story points)\n"
+        f"- Add implementation hints to the issue body to reduce exploration time"
+    )
+
+
+def post_timeout_failure(number: int, attempt: int, timeout_seconds: int):
+    """Post timeout failure with actionable guidance as a comment on the issue."""
+    comment = build_timeout_comment(attempt, timeout_seconds)
+    subprocess.run(
+        ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
+    )
+
+
 def post_attempt_failure(number: int, attempt: int, errors: str):
     """Post verification failure as a comment on the issue."""
     comment = f"**AutoLoop Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
@@ -969,10 +989,18 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
 
         last_errors = None
         empty_branch_failure = False
+        timeout_failure = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
-            claude_results.append(implement(issue, previous_errors=last_errors))
+            result = implement(issue, previous_errors=last_errors)
+            claude_results.append(result)
             final_attempt = attempt
+
+            if result.timed_out:
+                print(f"  Implementation timed out after {cfg.impl_timeout}s.")
+                post_timeout_failure(issue["number"], attempt, cfg.impl_timeout)
+                timeout_failure = True
+                break
 
             if is_branch_empty(branch):
                 print(f"  {EMPTY_BRANCH_DIAGNOSTIC}")
@@ -1006,7 +1034,9 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
 
         if not success:
-            if empty_branch_failure:
+            if timeout_failure:
+                print("  Implementation timed out. Labeling needs-human.")
+            elif empty_branch_failure:
                 print("  Implementation produced no changes. Labeling needs-human.")
             else:
                 print("  All retries exhausted. Labeling needs-human.")

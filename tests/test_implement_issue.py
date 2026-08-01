@@ -12,6 +12,7 @@ from autoloop.implement_issue import (
     acquire_lock,
     build_branch_name,
     build_pr_body,
+    build_timeout_comment,
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
@@ -35,6 +36,7 @@ from autoloop.implement_issue import (
     parse_dependency_numbers,
     parse_review_response,
     post_in_progress_comment,
+    post_timeout_failure,
     priority_rank,
     release_lock,
     review_implementation,
@@ -60,7 +62,12 @@ def _test_cfg(**overrides):
 
 
 def _claude_result(
-    cost_usd=1.5, input_tokens=1000, output_tokens=200, cache_read_tokens=500, success=True
+    cost_usd=1.5,
+    input_tokens=1000,
+    output_tokens=200,
+    cache_read_tokens=500,
+    success=True,
+    timed_out=False,
 ):
     return ClaudeResult(
         text="",
@@ -69,6 +76,7 @@ def _claude_result(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         success=success,
+        timed_out=timed_out,
     )
 
 
@@ -507,6 +515,62 @@ def test_post_attempt_failure_uses_cfg_repo(monkeypatch):
     implement_issue.post_attempt_failure(42, 2, "Tests failed")
 
     assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+
+
+# --- build_timeout_comment tests ---
+
+
+def test_build_timeout_comment_includes_timeout_duration():
+    comment = build_timeout_comment(1, 900)
+    assert "implementation timeout (900s)" in comment
+
+
+def test_build_timeout_comment_includes_attempt_number():
+    comment = build_timeout_comment(2, 900)
+    assert "Attempt 2 failed" in comment
+
+
+def test_build_timeout_comment_suggests_doubled_timeout():
+    comment = build_timeout_comment(1, 900)
+    assert "impl_timeout = 1800" in comment
+    assert "AUTOLOOP_TIMEOUT=1800" in comment
+
+
+def test_build_timeout_comment_suggests_decomposition():
+    comment = build_timeout_comment(1, 900)
+    assert "Decompose the issue into smaller sub-issues" in comment
+
+
+def test_build_timeout_comment_suggests_hints():
+    comment = build_timeout_comment(1, 900)
+    assert "implementation hints" in comment
+
+
+def test_build_timeout_comment_with_custom_timeout():
+    comment = build_timeout_comment(1, 1800)
+    assert "implementation timeout (1800s)" in comment
+    assert "impl_timeout = 3600" in comment
+    assert "AUTOLOOP_TIMEOUT=3600" in comment
+
+
+# --- post_timeout_failure tests ---
+
+
+def test_post_timeout_failure_uses_cfg_repo(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    post_timeout_failure(42, 1, 900)
+
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+    body = captured["cmd"][captured["cmd"].index("--body") + 1]
+    assert "implementation timeout (900s)" in body
+    assert "impl_timeout = 1800" in body
 
 
 def test_cleanup_merged_labels_uses_cfg_repo(monkeypatch):
@@ -1619,6 +1683,102 @@ def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_p
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 3
+
+
+# --- Timeout handling in implement_single_issue ---
+
+
+def test_implement_single_issue_timeout_posts_guidance(monkeypatch, tmp_path):
+    """Timeout after attempt 1 posts actionable guidance and short-circuits."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=900))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result(timed_out=True)
+
+    posted_comments = []
+
+    def fake_post_timeout(number, attempt, timeout_seconds):
+        posted_comments.append((number, attempt, timeout_seconds))
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_timeout_failure", fake_post_timeout)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 1
+    assert len(posted_comments) == 1
+    assert posted_comments[0] == (42, 1, 900)
+
+
+def test_implement_single_issue_timeout_prints_message(monkeypatch, tmp_path, capsys):
+    """Timeout prints the appropriate console message."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=600))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    monkeypatch.setattr(
+        implement_issue,
+        "implement",
+        lambda issue, previous_errors=None: _claude_result(timed_out=True),
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_timeout_failure", lambda n, a, t: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(_FAKE_ISSUE)
+    output = capsys.readouterr().out
+    assert "timed out after 600s" in output
+    assert "timed out. Labeling needs-human" in output
+
+
+def test_implement_single_issue_non_timeout_failure_still_retries(monkeypatch, tmp_path):
+    """Non-timeout failures (success=False but not timed_out) proceed normally."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
+    )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(
         implement_issue.subprocess,
