@@ -66,6 +66,12 @@ def detect_issue_type(body: str) -> str:
         return "fix"
     if "## type\nrefactor" in body_lower:
         return "refactor"
+    if "## type\nmigration" in body_lower:
+        return "refactor"
+    if "## type\ndocs" in body_lower:
+        return "docs"
+    if "## type\nchore" in body_lower:
+        return "chore"
     return "feat"
 
 
@@ -108,6 +114,8 @@ def collect_verification_errors(
     lint_rc: int,
     changed_files: list[str],
     test_pattern: str = "tests/*.py",
+    issue_type: str = "feat",
+    test_gate_skip_types: list[str] | None = None,
 ) -> list[str]:
     """Build error list from verification subprocess results."""
     errors = []
@@ -117,7 +125,8 @@ def collect_verification_errors(
         errors.append(f"Tests failed:\n{test_out[-500:]}")
     if lint_rc != 0:
         errors.append("Lint or format check failed")
-    if test_pattern:
+    skip_types = test_gate_skip_types if test_gate_skip_types is not None else []
+    if test_pattern and issue_type not in skip_types:
         test_files = [f for f in changed_files if fnmatch.fnmatch(f, test_pattern)]
         if not test_files:
             errors.append("No test files were added or modified")
@@ -603,7 +612,7 @@ def is_branch_empty(branch: str) -> bool:
     return count == "0" or count == ""
 
 
-def verify_implementation(branch: str) -> tuple[bool, str]:
+def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
@@ -645,6 +654,8 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         lint_rc=lint_rc,
         changed_files=changed,
         test_pattern=cfg.test_pattern,
+        issue_type=detect_issue_type(issue_body),
+        test_gate_skip_types=cfg.test_gate_skip_types,
     )
     if errors:
         return False, "\n".join(errors)
@@ -954,7 +965,7 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
                 empty_branch_failure = True
                 break
 
-            valid, errors = verify_implementation(branch)
+            valid, errors = verify_implementation(branch, issue_body=issue.get("body", ""))
             if not valid:
                 print(f"  Verification failed:\n{errors}")
                 last_errors = errors

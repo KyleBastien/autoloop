@@ -130,6 +130,22 @@ def test_detect_issue_type_feature():
     assert detect_issue_type("## Summary\nAdd\n\n## Type\nfeature") == "feat"
 
 
+def test_detect_issue_type_refactor():
+    assert detect_issue_type("## Summary\nClean up\n\n## Type\nrefactor") == "refactor"
+
+
+def test_detect_issue_type_migration():
+    assert detect_issue_type("## Summary\nMigrate to uv\n\n## Type\nmigration") == "refactor"
+
+
+def test_detect_issue_type_docs():
+    assert detect_issue_type("## Summary\nUpdate docs\n\n## Type\ndocs") == "docs"
+
+
+def test_detect_issue_type_chore():
+    assert detect_issue_type("## Summary\nBump deps\n\n## Type\nchore") == "chore"
+
+
 def test_detect_issue_type_default_feat():
     assert detect_issue_type("no type section here") == "feat"
 
@@ -237,6 +253,95 @@ def test_verification_empty_pattern_skips_check():
         test_pattern="",
     )
     assert errors == []
+
+
+def test_verification_refactor_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py"],
+        test_pattern="tests/*.py",
+        issue_type="refactor",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_docs_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["README.md"],
+        test_pattern="tests/*.py",
+        issue_type="docs",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_chore_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["pyproject.toml"],
+        test_pattern="tests/*.py",
+        issue_type="chore",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_feat_still_requires_test_files():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py"],
+        test_pattern="tests/*.py",
+        issue_type="feat",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert "No test files were added or modified" in errors
+
+
+def test_verification_migration_sub_issue_skips_test_gate():
+    """A migration issue (detected as refactor) with no test changes passes."""
+    body = "## Summary\nMigrate to uv\n\n## Type\nmigration"
+    issue_type = detect_issue_type(body)
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["pyproject.toml", "uv.lock"],
+        test_pattern="tests/*.py",
+        issue_type=issue_type,
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_skip_types_still_runs_tests():
+    """Even skip-type issues fail if the test suite itself fails."""
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=1,
+        test_out="FAILED test_something",
+        lint_rc=0,
+        changed_files=["pyproject.toml"],
+        test_pattern="tests/*.py",
+        issue_type="refactor",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert any("Tests failed" in e for e in errors)
+    assert "No test files were added or modified" not in errors
 
 
 # --- Config-driven tests: build_pr_body uses cfg ---
@@ -946,7 +1051,9 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch: (False, "Tests failed")
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -975,7 +1082,9 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
     monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
     monkeypatch.setattr(
-        implement_issue, "verify_implementation", lambda branch: (False, "Tests failed")
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
     )
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
@@ -1024,7 +1133,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
 
     verify_calls = [0]
 
-    def fake_verify(branch):
+    def fake_verify(branch, issue_body=""):
         verify_calls[0] += 1
         if verify_calls[0] < 2:
             return False, "attempt 1 failed"
@@ -1501,7 +1610,7 @@ def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_p
         attempt_count[0] += 1
         return _claude_result()
 
-    def fake_verify(branch):
+    def fake_verify(branch, issue_body=""):
         return False, "Tests failed:\nsome test output"
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)

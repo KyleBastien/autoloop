@@ -32,6 +32,7 @@ class AutoLoopConfig:
     test_pattern: str = "tests/*.py"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
+    test_gate_skip_types: list[str] = field(default_factory=lambda: ["refactor", "docs", "chore"])
     triage_labels: list[str] = field(
         default_factory=lambda: [
             "ready",
@@ -99,6 +100,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
+
+    if "test_gate_skip_types" in data:
+        config.test_gate_skip_types = list(data["test_gate_skip_types"])
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])

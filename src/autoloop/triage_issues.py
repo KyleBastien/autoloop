@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR
 from autoloop.create_issue import build_issue_body
+from autoloop.implement_issue import detect_issue_type
 
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
 
@@ -620,6 +621,7 @@ def create_sub_issues(
     parent_summary: str = "",
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
+    parent_type = detect_issue_type(parent_summary)
     step_to_issue: dict[int, int] = {}
     created: list[int] = []
     for step in result.get("decomposition", []):
@@ -636,10 +638,16 @@ def create_sub_issues(
             expected = step["title"]
             extra_criteria = ""
 
+        issue_type_label = {
+            "fix": "bug",
+            "refactor": "refactor",
+            "docs": "docs",
+            "chore": "chore",
+        }.get(parent_type, "feature")
         why = step.get("why_first") or step.get("why_after", "")
         body = build_issue_body(
             summary=step["title"],
-            issue_type="feature",
+            issue_type=issue_type_label,
             files="\n".join(step.get("files", [])),
             current_behavior="",
             expected=expected,
