@@ -134,9 +134,9 @@ def main():
             print("No parent issue to close.")
 
     elif args.command == "doctor":
-        from autoloop.doctor import run_checks
+        from autoloop.doctor import get_checks, run_checks
 
-        results = run_checks([])
+        results = run_checks(get_checks())
         if any(not r.passed for r in results):
             sys.exit(1)
 
