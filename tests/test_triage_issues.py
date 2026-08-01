@@ -485,6 +485,85 @@ def test_create_sub_issues_uses_cfg_repo(monkeypatch):
         assert call[call.index("--repo") + 1] == "acme/widgets"
 
 
+def test_create_sub_issues_inherits_parent_type(monkeypatch):
+    """Sub-issues inherit the parent's issue type instead of hardcoding 'feature'."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["pyproject.toml"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nMigrate to uv\n\n## Type\nrefactor"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "## Type\nrefactor" in bodies[0]
+    assert "## Type\nfeature" not in bodies[0]
+
+
+def test_create_sub_issues_migration_parent_inherits_refactor(monkeypatch):
+    """A migration parent produces sub-issues with type refactor."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["pyproject.toml"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nMigrate backend\n\n## Type\nmigration"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "## Type\nrefactor" in bodies[0]
+
+
 # --- Claude calls use cfg.triage_model ---
 
 
