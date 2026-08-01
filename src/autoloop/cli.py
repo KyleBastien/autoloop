@@ -66,6 +66,9 @@ def main():
     )
     acp_parser.add_argument("pr_number", type=int, help="PR number to check")
 
+    # doctor
+    subparsers.add_parser("doctor", help="Run environment and config checks")
+
     # preflight
     subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
 
@@ -129,6 +132,13 @@ def main():
             print(f"Closed parent issue #{result}")
         else:
             print("No parent issue to close.")
+
+    elif args.command == "doctor":
+        from autoloop.doctor import run_checks
+
+        results = run_checks([])
+        if any(not r.passed for r in results):
+            sys.exit(1)
 
     elif args.command == "preflight":
         from autoloop.config import load_config
