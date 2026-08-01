@@ -1,6 +1,6 @@
 # autoloop
 
-Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs — all from a single config file.
+Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs. One config file. One command to start.
 
 ## TLDR — First PR in 5 Minutes
 
