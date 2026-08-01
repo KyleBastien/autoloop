@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 
@@ -19,6 +20,44 @@ class Result:
     passed: bool
     message: str
     fix_hint: str
+
+
+def check_autoloop_toml(repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Validate that autoloop.toml exists and parses without error."""
+    from autoloop.config import load_config
+
+    config_path = (repo_dir or Path.cwd()) / "autoloop.toml"
+    try:
+        load_config(config_path)
+    except FileNotFoundError:
+        return False, "autoloop.toml not found"
+    except Exception as exc:
+        return False, f"autoloop.toml invalid: {exc}"
+    return True, "autoloop.toml found and valid"
+
+
+def check_claude_settings(repo_dir: Path | None = None) -> tuple[bool, str]:
+    """Validate that .claude/settings.json exists in the repo root."""
+    settings_path = (repo_dir or Path.cwd()) / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return False, ".claude/settings.json not found"
+    return True, ".claude/settings.json found"
+
+
+def get_checks(repo_dir: Path | None = None) -> list[Check]:
+    """Return the default set of doctor checks."""
+    return [
+        Check(
+            name="autoloop.toml",
+            fn=lambda: check_autoloop_toml(repo_dir),
+            fix_hint='run "autoloop init" to generate it',
+        ),
+        Check(
+            name=".claude/settings.json",
+            fn=lambda: check_claude_settings(repo_dir),
+            fix_hint='run "autoloop init" to scaffold it, or create manually',
+        ),
+    ]
 
 
 def run_checks(checks: list[Check]) -> list[Result]:
