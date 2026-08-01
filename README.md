@@ -1,12 +1,29 @@
 # autoloop
 
-Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs — all from a single config file.
+Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs. One config file. One command to start.
+
+## TLDR: First PR in 5 Minutes
+
+```bash
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+cd your-repo
+autoloop init --repo your-org/your-repo --verify-cmd "npm test"
+autoloop doctor                           # verify environment
+# Create a GitHub issue with a clear title and acceptance criteria
+autoloop triage                           # evaluates and labels the issue
+autoloop implement                        # builds it, opens a PR
+# Review and merge the PR
+```
+
+That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#3-create-an-issue).
+
+---
 
 ## Platform Support
 
-- **macOS** — fully supported (local mode)
-- **Linux** — fully supported (local + unattended/VPS mode)
-- **Windows** — not supported
+- **macOS**: fully supported (local mode)
+- **Linux**: fully supported (local + unattended/VPS mode)
+- **Windows**: not supported
 
 ## How It Works
 
@@ -14,7 +31,7 @@ Config-driven AI pipeline that triages GitHub issues, implements them via Claude
 |---|---|---|
 | Where | Your machine | VPS / remote server |
 | Trigger | You run the command | systemd timer / cron |
-| Gate | You review + merge PRs | Same — you're still the human gate |
+| Gate | You review + merge PRs | Same. You're still the human gate |
 | Best for | Evaluating autoloop, small projects | Trusted repos, overnight batch runs |
 
 Most users start local. Graduate to unattended when you trust it.
@@ -75,8 +92,8 @@ Contributions are currently limited to collaborators. A public issue board for i
 ## Prerequisites
 
 - **Python 3.13+**
-- **GitHub CLI (`gh`)** — [install](https://cli.github.com/) then run `gh auth login`
-- **Claude Code CLI (`claude`)** — [install](https://docs.anthropic.com/en/docs/claude-code/overview) (requires Claude Max or Pro subscription)
+- **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
+- **Claude Code CLI (`claude`)**: [install](https://docs.anthropic.com/en/docs/claude-code/overview) (requires Claude Max or Pro subscription)
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
 ## Quick Start (Local Mode)
@@ -154,7 +171,7 @@ Without --verbose, only the summary count is shown.
 Make the CLI better. It should show more stuff.
 ```
 
-You don't need to list which files to modify — triage identifies the relevant files automatically from the issue description and codebase. Including file paths is helpful if you know them, but not required.
+You don't need to list which files to modify. Triage identifies the relevant files automatically from the issue description and codebase. Including file paths is helpful if you know them, but not required.
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
 
@@ -169,7 +186,7 @@ Triage evaluates each untriaged issue and applies a label:
 | Label | Meaning |
 |-------|---------|
 | `ready` | Template complete, small enough to implement |
-| `needs-decomposition` | Template complete but too large — sub-issues are created automatically |
+| `needs-decomposition` | Template complete but too large. Sub-issues are created automatically |
 | `rejected` | Missing required fields (autoloop attempts to auto-fix and re-triage once) |
 | `needs-human` | Touches protected paths or requires human judgment |
 
@@ -191,7 +208,7 @@ For each issue, autoloop:
 
 ### 6. Review and merge
 
-Autoloop opens the PR but never merges it. You review and merge — that's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
+Autoloop opens the PR but never merges it. You review and merge. That's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
 
 ### 7. Fix broken PRs
 
@@ -200,10 +217,10 @@ autoloop fix-pr 42
 ```
 
 Detects and fixes:
-- **Stale base** — rebases on main
-- **Merge conflicts** — rebases, Claude resolves conflicts
-- **Lint failures** — runs ruff fix/format, falls back to Claude
-- **Test failures** — Claude fixes the code, re-verifies
+- **Stale base**: rebases on main
+- **Merge conflicts**: rebases, Claude resolves conflicts
+- **Lint failures**: runs ruff fix/format, falls back to Claude
+- **Test failures**: Claude fixes the code, re-verifies
 
 ## Creating Issues from a Spec
 
@@ -231,7 +248,7 @@ Add login and logout endpoints with session management.
 **File:** `src/api/middleware.py`
 ```
 
-The `**File:**` section is optional — include it if you know which files need modification, but the builder will determine the correct files from the description if omitted.
+The `**File:**` section is optional. Include it if you know which files need modification. The builder will determine the correct files from the description if omitted.
 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
@@ -293,7 +310,7 @@ loginctl enable-linger $USER
 systemctl --user list-timers | grep myapp
 ```
 
-The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix — it doesn't have to be "autoloop":
+The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix. It doesn't have to be "autoloop":
 
 ```toml
 # If your timers are named myapp-triage.timer / myapp-implement.timer:
@@ -303,7 +320,7 @@ timer_prefix = "myapp"
 # timer_prefix = "autoloop"
 ```
 
-This supports multiple repos on the same VPS — each repo has its own `autoloop.toml` with a distinct prefix.
+This supports multiple repos on the same VPS. Each repo has its own `autoloop.toml` with a distinct prefix.
 
 ### Mobile workflow
 
@@ -338,27 +355,27 @@ Install the MCP server on the VPS with `uv tool install "autoloop[mcp] @ git+htt
 
 Two mobile apps, two roles:
 
-- **GitHub mobile app** ([iOS](https://apps.apple.com/app/github/id1477376905) / [Android](https://play.google.com/store/apps/details?id=com.github.android)) — review diffs, approve, and merge PRs
-- **Claude mobile app** ([iOS](https://apps.apple.com/app/claude/id6473753684) / [Android](https://play.google.com/store/apps/details?id=com.anthropic.claude)) — tap **Code** at the bottom, select your VPS session from the list, and use the chat to invoke autoloop commands
+- **GitHub mobile app** ([iOS](https://apps.apple.com/app/github/id1477376905) / [Android](https://play.google.com/store/apps/details?id=com.github.android)): review diffs, approve, and merge PRs
+- **Claude mobile app** ([iOS](https://apps.apple.com/app/claude/id6473753684) / [Android](https://play.google.com/store/apps/details?id=com.anthropic.claude)): tap **Code** at the bottom, select your VPS session from the list, and use the chat to invoke autoloop commands
 
 Example workflow from your phone:
 
 1. **GitHub app**: review and merge a PR
-2. **Claude app**: "Implement the next ready issue" — autoloop picks the top issue and starts working
-3. **Claude app**: "Check autoloop status" — see progress, ready issue count, next timer
-4. **Claude app**: "Fix PR 42" — rebases and resolves conflicts or failing checks
+2. **Claude app**: "Implement the next ready issue". Autoloop picks the top issue and starts working
+3. **Claude app**: "Check autoloop status". See progress, ready issue count, next timer
+4. **Claude app**: "Fix PR 42". Rebases and resolves conflicts or failing checks
 
 ## Configuration Reference
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `repo` | — | GitHub `owner/repo` (required) |
+| `repo` | (required) | GitHub `owner/repo` (required) |
 | `triage_model` | `sonnet` | Claude model for triage |
 | `impl_model` | `claude-opus-4-6[1m]` | Claude model for implementation |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |
 | `test_timeout` | `120` | Test command timeout (seconds) |
-| `pr_reviewer` | — | GitHub username assigned to PRs |
+| `pr_reviewer` | (none) | GitHub username assigned to PRs |
 | `max_retries` | `3` | Retry attempts per issue |
 | `max_story_points` | `3` | Issues above this are decomposed |
 | `verify_cmd` | `uv run pytest` | Command to validate implementation |
