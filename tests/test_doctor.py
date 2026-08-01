@@ -11,6 +11,7 @@ from autoloop.doctor import (
     check_autoloop_toml,
     check_claude_cli_authenticated,
     check_claude_cli_installed,
+    check_claude_session,
     check_claude_settings,
     check_gh_cli_installed,
     get_checks,
@@ -134,12 +135,13 @@ def test_check_claude_settings_missing(tmp_path):
 
 def test_get_checks_returns_registered_checks():
     checks = get_checks()
-    assert len(checks) == 5
+    assert len(checks) == 6
     assert checks[0].name == "autoloop.toml"
     assert checks[1].name == ".claude/settings.json"
     assert checks[2].name == "claude CLI installed"
     assert checks[3].name == "claude CLI authenticated"
     assert checks[4].name == "gh CLI installed and authenticated"
+    assert checks[5].name == "Claude Code session conflict"
 
 
 def test_get_checks_all_pass(tmp_path, capsys):
@@ -152,7 +154,7 @@ def test_get_checks_all_pass(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 5
+    assert len(results) == 6
     file_results = [r for r in results if r.name in ("autoloop.toml", ".claude/settings.json")]
     assert all(r.passed for r in file_results)
     out = capsys.readouterr().out
@@ -163,7 +165,7 @@ def test_get_checks_all_fail(tmp_path, capsys):
     checks = get_checks(tmp_path)
     results = run_checks(checks)
 
-    assert len(results) == 5
+    assert len(results) == 6
     out = capsys.readouterr().out
     assert "✗" in out
 
@@ -258,3 +260,27 @@ def test_check_gh_cli_not_authenticated():
         passed, msg = check_gh_cli_installed()
     assert passed is False
     assert "not authenticated" in msg
+
+
+# --- Claude Code session conflict check ---
+
+
+def test_check_claude_session_no_conflict(tmp_path):
+    with patch("autoloop.implement_issue.detect_active_claude_session", return_value=False):
+        passed, msg = check_claude_session(tmp_path)
+    assert passed is True
+    assert "No active Claude Code session conflict" in msg
+
+
+def test_check_claude_session_conflict_detected(tmp_path):
+    with patch("autoloop.implement_issue.detect_active_claude_session", return_value=True):
+        passed, msg = check_claude_session(tmp_path)
+    assert passed is False
+    assert "Active Claude Code session detected" in msg
+
+
+def test_check_claude_session_detection_unavailable(tmp_path):
+    with patch("autoloop.implement_issue.detect_active_claude_session", return_value=None):
+        passed, msg = check_claude_session(tmp_path)
+    assert passed is True
+    assert "unavailable" in msg
