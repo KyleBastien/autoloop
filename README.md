@@ -2,6 +2,15 @@
 
 Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs. One config file. One command to start.
 
+## Prerequisites
+
+- **Python 3.13+**
+- **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
+- **Node.js 22+**: required by Claude Code CLI
+- **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
+- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
+- A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
+
 ## TLDR: First PR in 5 Minutes
 
 ```bash
@@ -88,15 +97,6 @@ uv run autoloop version
 ```
 
 Contributions are currently limited to collaborators. A public issue board for ideas and feature requests will be available soon. In the meantime, reach out to andywidjaja@gmail.com.
-
-## Prerequisites
-
-- **Python 3.13+**
-- **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
-- **Node.js 22+**: required by Claude Code CLI
-- **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
-- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
-- A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 
 ## Quick Start (Local Mode)
 
