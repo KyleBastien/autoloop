@@ -1987,18 +1987,25 @@ def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypa
     assert detect_active_claude_session("/different/path") is False
 
 
-def test_main_passes_repo_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
-    """main() passes REPO_DIR explicitly, not None or a call-time cwd."""
+def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
+    """main() passes cfg.project_dir, not REPO_DIR or None."""
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
-    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+
+    cfg_project = tmp_path / "cfg_project"
+    cfg_project.mkdir()
+    monkeypatch.setattr(
+        implement_issue,
+        "load_config",
+        lambda path=None: _test_cfg(project_dir=str(cfg_project)),
+    )
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
-    fake_repo = tmp_path / "fake_repo"
-    fake_repo.mkdir()
-    monkeypatch.setattr(implement_issue, "REPO_DIR", fake_repo)
+    import_time_repo = tmp_path / "import_time_repo"
+    import_time_repo.mkdir()
+    monkeypatch.setattr(implement_issue, "REPO_DIR", import_time_repo)
 
     captured_dirs = []
 
@@ -2012,7 +2019,8 @@ def test_main_passes_repo_dir_to_detect_active_claude_session(monkeypatch, tmp_p
     implement_issue.main()
 
     assert len(captured_dirs) == 1
-    assert captured_dirs[0] == str(fake_repo), "main() must pass REPO_DIR as project_dir"
+    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not REPO_DIR"
+    assert captured_dirs[0] != str(import_time_repo), "main() must not use module-level REPO_DIR"
 
 
 # --- truncate_spec tests ---

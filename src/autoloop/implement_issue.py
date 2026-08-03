@@ -1131,7 +1131,8 @@ def main(issue=None, max_issues=1, require_design=False):
     if cfg is None:
         cfg = load_config()
 
-    session_detected = detect_active_claude_session(str(REPO_DIR))
+    logging.debug("main: resolved project_dir=%s from cfg", cfg.project_dir)
+    session_detected = detect_active_claude_session(cfg.project_dir)
     if session_detected is True:
         print(
             "Active Claude Code session detected in this directory.\n"
