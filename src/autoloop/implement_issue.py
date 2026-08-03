@@ -15,6 +15,7 @@ import re
 import subprocess
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR, load_config
@@ -206,6 +207,7 @@ def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
         project_dir = str(REPO_DIR)
 
     project_dir = os.path.realpath(project_dir)
+    logging.debug("detect_active_claude_session: resolved project_dir=%s", project_dir)
 
     try:
         result = subprocess.run(
@@ -257,6 +259,7 @@ def _check_cwd_lsof(pids: list[int], project_dir: str) -> bool | None:
     for line in result.stdout.splitlines():
         if line.startswith("n"):
             cwd = os.path.realpath(line[1:])
+            logging.debug("detect_active_claude_session: session cwd=%s", cwd)
             if cwd == project_dir:
                 return True
 
@@ -270,6 +273,7 @@ def _check_cwd_proc(pids: list[int], project_dir: str) -> bool | None:
         try:
             cwd = os.path.realpath(f"/proc/{pid}/cwd")
             checked_any = True
+            logging.debug("detect_active_claude_session: session cwd=%s", cwd)
             if cwd == project_dir:
                 return True
         except (OSError, PermissionError):
@@ -1128,7 +1132,8 @@ def main(issue=None, max_issues=1, require_design=False):
     if cfg is None:
         cfg = load_config()
 
-    session_detected = detect_active_claude_session()
+    project_dir = str(Path.cwd())
+    session_detected = detect_active_claude_session(project_dir)
     if session_detected is True:
         print(
             "Active Claude Code session detected in this directory.\n"
