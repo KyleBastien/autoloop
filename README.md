@@ -24,7 +24,7 @@ autoloop implement                        # builds it, opens a PR
 # Review and merge the PR
 ```
 
-That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#3-create-an-issue).
+That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
 
 ---
 
