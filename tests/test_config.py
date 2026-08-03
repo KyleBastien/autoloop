@@ -42,6 +42,19 @@ def test_load_from_toml(autoloop_toml, monkeypatch):
     assert config.triage_labels == ["ready", "blocked"]
 
 
+def test_load_config_sets_project_dir_from_config_path(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+
+    subdir = tmp_path / "nested" / "project"
+    subdir.mkdir(parents=True)
+    toml_path = subdir / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+
+    config = load_config(toml_path)
+    assert config.project_dir == str(subdir.resolve())
+
+
 def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     for var in (
         "AUTOLOOP_TRIAGE_MODEL",

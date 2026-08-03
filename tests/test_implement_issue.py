@@ -1476,7 +1476,9 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
 
     issues = [{"number": 1, "title": "Issue one", "body": "", "labels": []}]
     call_count = [0]
@@ -1507,7 +1509,9 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
@@ -1522,7 +1526,9 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: False)
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
@@ -1930,7 +1936,9 @@ def test_main_aborts_when_active_session_detected(monkeypatch, tmp_path, capsys)
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: True)
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: True
+    )
 
     implement_issue.cfg = None
     implement_issue.main()
@@ -1944,7 +1952,9 @@ def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
-    monkeypatch.setattr(implement_issue, "detect_active_claude_session", lambda: None)
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: None
+    )
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
@@ -1954,6 +1964,63 @@ def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "Active Claude Code session" not in out
     assert "No more ready issues." in out
+
+
+def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypatch):
+    """Passing an explicit project_dir evaluates against that path, not REPO_DIR."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/explicit/path\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "REPO_DIR", "/import/time/cwd")
+
+    assert detect_active_claude_session("/explicit/path") is True
+    assert detect_active_claude_session("/different/path") is False
+
+
+def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
+    """main() passes cfg.project_dir, not REPO_DIR or None."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    cfg_project = tmp_path / "cfg_project"
+    cfg_project.mkdir()
+    monkeypatch.setattr(
+        implement_issue,
+        "load_config",
+        lambda path=None: _test_cfg(project_dir=str(cfg_project)),
+    )
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    import_time_repo = tmp_path / "import_time_repo"
+    import_time_repo.mkdir()
+    monkeypatch.setattr(implement_issue, "REPO_DIR", import_time_repo)
+
+    captured_dirs = []
+
+    def fake_detect(project_dir=None):
+        captured_dirs.append(project_dir)
+        return False
+
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", fake_detect)
+
+    implement_issue.cfg = None
+    implement_issue.main()
+
+    assert len(captured_dirs) == 1
+    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not REPO_DIR"
+    assert captured_dirs[0] != str(import_time_repo), "main() must not use module-level REPO_DIR"
 
 
 # --- truncate_spec tests ---

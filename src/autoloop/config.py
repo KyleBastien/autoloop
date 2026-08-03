@@ -43,6 +43,7 @@ class AutoLoopConfig:
             "needs-human",
         ]
     )
+    project_dir: str = ""
 
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
@@ -67,6 +68,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     config = AutoLoopConfig()
+    config.project_dir = str(config_path.parent.resolve())
 
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
