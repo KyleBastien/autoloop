@@ -67,9 +67,9 @@ def _is_process_running(name: str) -> bool:
 
 def main():
     try:
-        from mcp.server.fastmcp import FastMCP
+        from fastmcp import FastMCP
     except ImportError:
-        print("MCP server requires the 'mcp' package. Install with:")
+        print("MCP server requires the 'fastmcp' package. Install with:")
         print("  uv tool install 'autoloop[mcp]'")
         raise SystemExit(1)
 

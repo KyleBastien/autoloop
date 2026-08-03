@@ -1,8 +1,4 @@
-"""Regression tests for mcp version pin (issue #59).
-
-mcp v2.0.0 removed mcp.server.fastmcp.FastMCP. The optional dependency
-must stay pinned to mcp<2 until we migrate to the fastmcp package.
-"""
+"""Tests for fastmcp dependency and import fallback."""
 
 from __future__ import annotations
 
@@ -20,8 +16,8 @@ except ImportError:
     import tomli as tomllib
 
 
-def test_pyproject_pins_mcp_below_2():
-    """pyproject.toml must pin mcp<2 to avoid the broken v2.0.0 import."""
+def test_pyproject_requires_fastmcp_v3():
+    """pyproject.toml must depend on fastmcp>=3,<4."""
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     with open(pyproject, "rb") as f:
         data = tomllib.load(f)
@@ -29,15 +25,14 @@ def test_pyproject_pins_mcp_below_2():
     mcp_deps = data["project"]["optional-dependencies"]["mcp"]
     assert len(mcp_deps) == 1
     spec = mcp_deps[0]
-    assert "<2" in spec, f"mcp dep must have upper bound <2, got: {spec}"
-    assert ">=1.2" in spec, f"mcp dep must require >=1.2, got: {spec}"
+    assert "fastmcp" in spec, f"mcp extra must depend on fastmcp, got: {spec}"
+    assert ">=3" in spec, f"fastmcp dep must require >=3, got: {spec}"
+    assert "<4" in spec, f"fastmcp dep must have upper bound <4, got: {spec}"
 
 
 def test_main_exits_when_fastmcp_missing(monkeypatch):
-    """main() prints install instructions and exits 1 when FastMCP is missing."""
-    monkeypatch.setitem(sys.modules, "mcp", None)
-    monkeypatch.setitem(sys.modules, "mcp.server", None)
-    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", None)
+    """main() prints install instructions and exits 1 when fastmcp is missing."""
+    monkeypatch.setitem(sys.modules, "fastmcp", None)
 
     from importlib import reload
 
@@ -50,15 +45,13 @@ def test_main_exits_when_fastmcp_missing(monkeypatch):
         autoloop.mcp_server.main()
 
     output = captured.getvalue()
-    assert "mcp" in output
+    assert "fastmcp" in output
     assert "uv tool install" in output
 
 
-def test_main_succeeds_with_mcp_v1(monkeypatch):
-    """main() creates a FastMCP server when mcp.server.fastmcp is importable."""
-    fake_mcp = types.ModuleType("mcp")
-    fake_server = types.ModuleType("mcp.server")
-    fake_fastmcp = types.ModuleType("mcp.server.fastmcp")
+def test_main_succeeds_with_fastmcp(monkeypatch):
+    """main() creates a FastMCP server when fastmcp is importable."""
+    fake_fastmcp = types.ModuleType("fastmcp")
 
     class FakeFastMCP:
         def __init__(self, name):
@@ -77,9 +70,7 @@ def test_main_succeeds_with_mcp_v1(monkeypatch):
 
     fake_fastmcp.FastMCP = FakeFastMCP
 
-    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
-    monkeypatch.setitem(sys.modules, "mcp.server", fake_server)
-    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fake_fastmcp)
+    monkeypatch.setitem(sys.modules, "fastmcp", fake_fastmcp)
 
     from importlib import reload
 
