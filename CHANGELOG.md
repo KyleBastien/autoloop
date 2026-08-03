@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.5
+
+- Migrate from mcp SDK v1 to fastmcp v3 (removes `mcp<2` version pin workaround)
+
 ## v0.3.4
 
 - Fix session detection blocking implement when Claude Code runs in a different directory
