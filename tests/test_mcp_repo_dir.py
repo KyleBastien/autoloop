@@ -62,16 +62,12 @@ class _FakeServer:
 @pytest.fixture()
 def mcp_tools(monkeypatch):
     """Register MCP tools using a fake FastMCP and return the tool dict."""
-    fake_mcp_mod = types.ModuleType("mcp")
-    fake_server_mod = types.ModuleType("mcp.server")
-    fake_fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
+    fake_fastmcp_mod = types.ModuleType("fastmcp")
 
     server = _FakeServer()
     fake_fastmcp_mod.FastMCP = lambda name: server
 
-    monkeypatch.setitem(sys.modules, "mcp", fake_mcp_mod)
-    monkeypatch.setitem(sys.modules, "mcp.server", fake_server_mod)
-    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fake_fastmcp_mod)
+    monkeypatch.setitem(sys.modules, "fastmcp", fake_fastmcp_mod)
 
     from importlib import reload
 
