@@ -1987,14 +1987,18 @@ def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypa
     assert detect_active_claude_session("/different/path") is False
 
 
-def test_main_passes_cwd_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
-    """main() passes the current working directory, not module-level REPO_DIR."""
+def test_main_passes_repo_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
+    """main() passes REPO_DIR explicitly, not None or a call-time cwd."""
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    fake_repo = tmp_path / "fake_repo"
+    fake_repo.mkdir()
+    monkeypatch.setattr(implement_issue, "REPO_DIR", fake_repo)
 
     captured_dirs = []
 
@@ -2008,7 +2012,7 @@ def test_main_passes_cwd_to_detect_active_claude_session(monkeypatch, tmp_path, 
     implement_issue.main()
 
     assert len(captured_dirs) == 1
-    assert captured_dirs[0] is not None, "main() must pass an explicit project_dir"
+    assert captured_dirs[0] == str(fake_repo), "main() must pass REPO_DIR as project_dir"
 
 
 # --- truncate_spec tests ---

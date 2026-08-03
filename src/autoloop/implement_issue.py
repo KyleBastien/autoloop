@@ -15,7 +15,6 @@ import re
 import subprocess
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR, load_config
@@ -1132,8 +1131,7 @@ def main(issue=None, max_issues=1, require_design=False):
     if cfg is None:
         cfg = load_config()
 
-    project_dir = str(Path.cwd())
-    session_detected = detect_active_claude_session(project_dir)
+    session_detected = detect_active_claude_session(str(REPO_DIR))
     if session_detected is True:
         print(
             "Active Claude Code session detected in this directory.\n"
