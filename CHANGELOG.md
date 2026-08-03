@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.4
+
+- Fix session detection blocking implement when Claude Code runs in a different directory
+
 ## v0.3.3
 
 - `autoloop doctor` command: validates environment, config, CLI auth, verify_cmd, and session conflicts before first run
