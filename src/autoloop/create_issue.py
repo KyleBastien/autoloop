@@ -81,9 +81,8 @@ def build_issue_body(
 ) -> str:
     """Assemble the markdown issue body from field values.
 
-    ``code_work=False`` marks an issue whose deliverable is not a change to this
-    repo. Those skip the build/test/lint acceptance criteria, which would
-    otherwise read as a requirement to produce a diff.
+    ``code_work=False`` skips the build/test/lint criteria, which would otherwise
+    read as a requirement to produce a diff.
     """
     sections = [f"## Summary\n{summary}", f"## Type\n{issue_type}"]
 

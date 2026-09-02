@@ -145,13 +145,10 @@ Triage evaluates each untriaged issue and applies a label:
 | `needs-human` | Touches protected paths, isn't code work, or requires human judgment |
 
 An issue whose deliverable isn't a change to this repo's code — filing a ticket
-somewhere, sending a message, running a query, a decision — is routed to
-`needs-human` rather than `ready`, however well-written it is. The implement
-pipeline only reports success when it produces commits and a changed test file,
-so handing it work it cannot express as a diff makes it fail or invent an
-unrelated one. Decomposition marks such steps `code_work: false`, and they skip
-the build/test/lint acceptance criteria that would otherwise read as a demand
-for a diff.
+somewhere, sending a message, a decision — goes to `needs-human` however well
+written it is, because implement only succeeds when it produces commits and a
+changed test file. Decomposition marks such steps `code_work: false`; they skip
+the build/test/lint acceptance criteria too.
 
 ### 5. Implement
 

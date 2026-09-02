@@ -68,9 +68,8 @@ VERDICT:
   the deliverable, not on how well-written the issue is. A complete, specific,
   perfectly-templated issue is still "not-code-work" if finishing it would leave
   the tree untouched. Examples: filing or updating a ticket somewhere, sending a
-  message, running a query, provisioning access, a decision or discussion, or work
-  whose stated outcome already exists. Put what the deliverable actually is in
-  "reason".
+  message, running a query, provisioning access, or a decision. Put what the
+  deliverable actually is in "reason".
 - "ready" if template complete AND estimated ≤{cfg.max_story_points} points
 - "needs-decomposition" if template complete BUT >{cfg.max_story_points} points
 - "rejected" if template incomplete or vague
@@ -394,12 +393,7 @@ def apply_rewrite(number: int, body: str, cfg: AutoLoopConfig):
 
 
 def route_to_human(number: int, reason: str, cfg: AutoLoopConfig):
-    """Label issue needs-human and comment why the pipeline stopped.
-
-    The implement pipeline only reports success when it produces commits and a
-    changed test file, so anything it cannot express as a diff has to leave the
-    loop here rather than reach it.
-    """
+    """Label issue needs-human and comment why the pipeline stopped."""
     src = get_source(cfg)
     src.edit_issue(number, add_labels=["needs-human"])
     src.comment(number, f"**Auto-triage — needs-human:** {reason}")
@@ -484,9 +478,8 @@ def create_sub_issues(
             # Label the sub-issue now from its own point estimate so it is NOT
             # re-triaged (and re-decomposed into yet another near-identical
             # child) on the next run. This is what stops the decomposition loop.
-            # A non-code step can never satisfy the implement pipeline's
-            # commits-and-a-changed-test-file gate, so it goes straight to a
-            # human no matter how small it is.
+            # A non-code step goes to a human whatever its size: it can never
+            # satisfy the implement gate (commits + a changed test file).
             points = step.get("points", cfg.max_story_points + 1)
             if code_work and points <= cfg.max_story_points:
                 src.edit_issue(issue_num, add_labels=["ready", "p2"])
@@ -647,9 +640,8 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         print(f"  #{issue['number']}: not code work, routing to needs-human")
         route_to_human(
             issue["number"],
-            f"this issue's deliverable is not a code change to this repo — {verdict['reason']}."
-            " The implement pipeline can only produce commits, so it would either fail or"
-            " manufacture an unrelated diff. Handle it by hand and close it.",
+            f"this issue's deliverable is not a code change to this repo —"
+            f" {verdict['reason']}. Handle it by hand rather than via implement.",
             cfg,
         )
         return results
