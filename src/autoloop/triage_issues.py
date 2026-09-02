@@ -63,13 +63,25 @@ PROJECT COMMANDS:
 - Lint: {cfg.lint_command}
 
 VERDICT:
+- "not-code-work" if the issue's deliverable is not a change to this repo's code.
+  This takes precedence over every other verdict — check it first, and judge it on
+  the deliverable, not on how well-written the issue is. A complete, specific,
+  perfectly-templated issue is still "not-code-work" if finishing it would leave
+  the tree untouched. Examples: filing or updating a ticket somewhere, sending a
+  message, running a query, provisioning access, a decision or discussion, or work
+  whose stated outcome already exists. Put what the deliverable actually is in
+  "reason".
 - "ready" if template complete AND estimated ≤{cfg.max_story_points} points
 - "needs-decomposition" if template complete BUT >{cfg.max_story_points} points
 - "rejected" if template incomplete or vague
 
+"rejected" means the issue is badly written and a rewrite could fix it. Do NOT use
+it for an issue that is well written but asks for something other than a code
+change — that is "not-code-work", and rewriting it cannot help.
+
 Respond with JSON only:
 {{{{
-  "verdict": "ready" | "needs-decomposition" | "rejected",
+  "verdict": "ready" | "needs-decomposition" | "rejected" | "not-code-work",
   "points": 1 | 2 | 3 | 5 | 8,
   "priority": "p0" | "p1" | "p2",
   "reason": "one line",
@@ -78,7 +90,12 @@ Respond with JSON only:
 }}}}
 
 Include "decomposition" only if verdict is "needs-decomposition".
-Each sub-issue: {{{{order, title, points, depends_on, files, why_first/why_after}}}}.
+Each sub-issue: {{{{order, title, points, depends_on, files, why_first/why_after, code_work}}}}.
+
+"code_work" is false when that step's deliverable is not a change to this repo's
+code — filing or updating a ticket elsewhere, sending a message, running a query,
+provisioning access, a decision. Those steps are handed to a human instead of the
+implement pipeline, so mark them honestly rather than dressing them up as code.
 """
 
 
@@ -376,6 +393,18 @@ def apply_rewrite(number: int, body: str, cfg: AutoLoopConfig):
     )
 
 
+def route_to_human(number: int, reason: str, cfg: AutoLoopConfig):
+    """Label issue needs-human and comment why the pipeline stopped.
+
+    The implement pipeline only reports success when it produces commits and a
+    changed test file, so anything it cannot express as a diff has to leave the
+    loop here rather than reach it.
+    """
+    src = get_source(cfg)
+    src.edit_issue(number, add_labels=["needs-human"])
+    src.comment(number, f"**Auto-triage — needs-human:** {reason}")
+
+
 def approve_issue(number: int, priority: str, reason: str, cfg: AutoLoopConfig):
     """Label issue as ready with priority and comment."""
     src = get_source(cfg)
@@ -432,6 +461,7 @@ def create_sub_issues(
             extra_criteria = ""
 
         why = step.get("why_first") or step.get("why_after", "")
+        code_work = step.get("code_work", True)
         body = build_issue_body(
             summary=step["title"],
             issue_type="feature",
@@ -444,6 +474,7 @@ def create_sub_issues(
             context=f"Parent issue: {src.ref(parent_number)}",
             verify_cmd=cfg.verify_cmd,
             lint_command=cfg.lint_command,
+            code_work=code_work,
         )
 
         issue_num = src.create_issue(step["title"], body)
@@ -453,8 +484,11 @@ def create_sub_issues(
             # Label the sub-issue now from its own point estimate so it is NOT
             # re-triaged (and re-decomposed into yet another near-identical
             # child) on the next run. This is what stops the decomposition loop.
+            # A non-code step can never satisfy the implement pipeline's
+            # commits-and-a-changed-test-file gate, so it goes straight to a
+            # human no matter how small it is.
             points = step.get("points", cfg.max_story_points + 1)
-            if points <= cfg.max_story_points:
+            if code_work and points <= cfg.max_story_points:
                 src.edit_issue(issue_num, add_labels=["ready", "p2"])
             else:
                 src.edit_issue(issue_num, add_labels=["needs-human"])
@@ -609,6 +643,17 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         reject_issue(issue["number"], verdict["reason"], cfg)
         return results
 
+    if verdict["verdict"] == "not-code-work":
+        print(f"  #{issue['number']}: not code work, routing to needs-human")
+        route_to_human(
+            issue["number"],
+            f"this issue's deliverable is not a code change to this repo — {verdict['reason']}."
+            " The implement pipeline can only produce commits, so it would either fail or"
+            " manufacture an unrelated diff. Handle it by hand and close it.",
+            cfg,
+        )
+        return results
+
     if verdict.get("files_missing", False):
         files, disc_result = discover_files(issue, cfg)
         results.append(disc_result)
@@ -623,12 +668,11 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         mentioned_files = extract_files_from_spec(body)
         if touches_protected_path(mentioned_files, cfg.protected_paths):
             print(f"  #{issue['number']}: touches protected path, routing to needs-human")
-            src = get_source(cfg)
-            src.edit_issue(issue["number"], add_labels=["needs-human"])
-            src.comment(
+            route_to_human(
                 issue["number"],
-                "**Auto-triage — needs-human:** issue targets protected paths"
-                f" ({', '.join(mentioned_files)}). Requires manual implementation.",
+                f"issue targets protected paths ({', '.join(mentioned_files)})."
+                " Requires manual implementation.",
+                cfg,
             )
             return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
@@ -636,12 +680,11 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
         if is_sub_issue(issue):
             # Already a decomposition product — recursing would spawn another
             # near-identical child (the loop we're fixing). Send to a human.
-            src = get_source(cfg)
-            src.edit_issue(issue["number"], add_labels=["needs-human"])
-            src.comment(
+            route_to_human(
                 issue["number"],
-                "**Auto-triage — needs-human:** this is already a sub-issue but is "
-                "still estimated too large; not decomposing further.",
+                "this is already a sub-issue but is still estimated too large;"
+                " not decomposing further.",
+                cfg,
             )
         else:
             decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")
