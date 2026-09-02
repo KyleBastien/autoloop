@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Triage routes non-code work to `needs-human` instead of `ready`, so the
+  implement pipeline is never handed work it cannot express as a diff
+- Decomposition marks non-code steps `code_work: false`; those sub-issues are
+  labelled `needs-human` regardless of size and omit the build/test/lint
+  acceptance criteria
+
 ## v0.1.7
 
 - Recursive auto-close walks nested parent chains

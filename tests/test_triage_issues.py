@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import autoloop.triage_issues as triage_issues
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
@@ -18,6 +20,8 @@ from autoloop.triage_issues import (
     parse_rewritten_body,
     parse_sub_issue_response,
     parse_triage_response,
+    route_to_human,
+    triage_issue,
     validate_discovered_files,
 )
 
@@ -736,3 +740,106 @@ def test_create_sub_issues_labels_by_points(monkeypatch):
     labels_by_issue = {num: kw.get("add_labels") for num, kw in src.edits}
     assert labels_by_issue[100] == ["ready", "p2"]
     assert labels_by_issue[101] == ["needs-human"]
+
+
+# --- non-code work never reaches the implement pipeline ---
+
+
+def test_triage_prompt_documents_not_code_work_verdict():
+    prompt = build_triage_prompt(_cfg())
+    assert "not-code-work" in prompt
+    # It has to outrank the others, or a well-templated ops issue grades "ready".
+    assert "takes precedence over every other verdict" in prompt
+
+
+def test_route_to_human_labels_and_comments(monkeypatch):
+    cfg = _cfg()
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+
+    route_to_human(7, "some reason", cfg)
+
+    assert src.edits == [(7, {"add_labels": ["needs-human"]})]
+    assert src.comments == [(7, "**Auto-triage — needs-human:** some reason")]
+
+
+def test_triage_issue_routes_not_code_work_to_human(monkeypatch):
+    """Regression: an ops issue graded ready and reached the implement pipeline,
+    which cannot succeed without a diff and so manufactured an unrelated one."""
+    cfg = _cfg()
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(triage_issues, "find_duplicate", lambda i, c: (None, None))
+    monkeypatch.setattr(
+        triage_issues,
+        "evaluate_issue",
+        lambda i, c: (
+            {
+                "verdict": "not-code-work",
+                "reason": "the deliverable is a ticket filed on another tracker",
+                "points": 1,
+                "priority": "p2",
+            },
+            ClaudeResult("", 0, 0, 0, 0, success=True),
+        ),
+    )
+    # Neither approval nor rejection may fire for this verdict.
+    monkeypatch.setattr(
+        triage_issues, "approve_issue", lambda *a, **k: pytest.fail("approved non-code work")
+    )
+    monkeypatch.setattr(
+        triage_issues, "reject_issue", lambda *a, **k: pytest.fail("rejected non-code work")
+    )
+
+    triage_issue({"number": 506, "title": "File a ticket", "body": "..."}, cfg)
+
+    assert src.edits == [(506, {"add_labels": ["needs-human"]})]
+    assert "not a code change to this repo" in src.comments[0][1]
+
+
+def test_create_sub_issues_routes_non_code_step_to_human(monkeypatch):
+    """Regression: sub-issues are labelled straight from their point estimate and
+    never re-triaged, so a small non-code step was labelled ready and picked up."""
+    cfg = _cfg(max_story_points=2)
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
+
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "write the helper", "points": 1, "files": []},
+            {"order": 2, "title": "file a ticket elsewhere", "points": 1, "code_work": False},
+        ]
+    }
+    create_sub_issues(42, result, cfg)
+
+    labels_by_issue = {num: kw.get("add_labels") for num, kw in src.edits}
+    assert labels_by_issue[100] == ["ready", "p2"]
+    # Small enough to be "ready" on points alone — code_work is what stops it.
+    assert labels_by_issue[101] == ["needs-human"]
+
+
+def test_sub_issue_body_omits_build_criteria_for_non_code_work():
+    from autoloop.create_issue import build_issue_body
+
+    kwargs = dict(
+        summary="File a ticket elsewhere",
+        issue_type="feature",
+        files="",
+        current_behavior="",
+        expected="A ticket exists on the other tracker",
+        extra_criteria="Ticket exists and links the source thread",
+        hints="",
+        deps="",
+        context="",
+        verify_cmd="uv run pytest",
+        lint_command="uv run ruff check",
+    )
+
+    code_body = build_issue_body(**kwargs)
+    assert "New unit tests pass" in code_body
+
+    ops_body = build_issue_body(**kwargs, code_work=False)
+    assert "New unit tests pass" not in ops_body
+    assert "uv run pytest" not in ops_body
+    assert "Ticket exists and links the source thread" in ops_body
