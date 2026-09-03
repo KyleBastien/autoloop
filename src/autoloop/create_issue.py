@@ -137,6 +137,7 @@ Rules:
 - Expected behavior must be specific and testable.
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean" — those are added automatically.
+- Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
 """
 
 
@@ -203,6 +204,7 @@ Rules:
 - Expected behavior must be specific and testable.
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean" — those are added automatically.
+- Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
 - deps should contain "Depends on: #N" if the spec mentions dependencies, else empty string.
 """
 

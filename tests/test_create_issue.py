@@ -716,3 +716,14 @@ def test_parse_spec_enhancements_task_no_notice(tmp_path, capsys):
     parse_spec_enhancements(str(spec_file))
     captured = capsys.readouterr()
     assert "Enhancement" not in captured.out
+
+
+# --- criteria suggested for a new issue must be falsifiable too ---
+
+
+def test_suggest_and_spec_prompts_reject_mock_satisfiable_criteria():
+    from autoloop.create_issue import SPEC_TO_ISSUE_PROMPT, SUGGEST_PROMPT
+
+    for prompt in (SUGGEST_PROMPT, SPEC_TO_ISSUE_PROMPT):
+        assert "falsifiable by observable behavior" in prompt
+        assert "satisfied by asserting on a mock" in prompt

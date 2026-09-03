@@ -236,9 +236,20 @@ For each issue, autoloop:
 5. Retries on failure (up to `max_retries`)
 6. Opens a PR with run stats (duration, cost, tokens)
 
+The implement and review prompts both enforce that a fix stays **falsifiable**: a test
+may not mock, stub or patch a function the same change introduced, since such a test
+passes even when the wiring is wrong. Changes that can suppress an output must test both
+directions, and code that recognizes the system's own output must match a marker it sets
+rather than user-facing text.
+
 ### 7. Review and merge
 
 Autoloop opens the PR but never merges it. You review and merge. That's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
+
+A parent closes on sub-issue completion alone, which is not proof the parent is satisfied —
+a decomposition can drop a criterion no child inherited. The auto-close comment therefore
+repeats the parent's own acceptance criteria and says plainly that they were not
+re-verified, so a gap is visible on the issue rather than silent.
 
 ### 8. Fix broken PRs
 

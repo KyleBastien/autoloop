@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Implement and review prompts enforce falsifiable fixes: no mocking a function the same change adds, both directions tested for a suppressing change, own-output recognized by a marker rather than by display text
+- Generated acceptance criteria must be falsifiable by observable behavior, not satisfiable by asserting on a mock
+- Parent auto-close repeats the parent's own acceptance criteria and states they were not re-verified
+
 ## v0.3.5
 
 - Migrate from mcp SDK v1 to fastmcp v3 (removes `mcp<2` version pin workaround)

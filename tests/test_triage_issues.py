@@ -1839,3 +1839,13 @@ def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
     assert "eslint ." in captured["prompt"]
     assert "uv run pytest" not in captured["prompt"]
     assert "uv run ruff" not in captured["prompt"]
+
+
+# --- criteria the decomposer writes must be falsifiable, not mock-satisfiable ---
+
+
+def test_sub_issue_prompt_rejects_mock_satisfiable_criteria():
+    from autoloop.triage_issues import SUB_ISSUE_PROMPT
+
+    assert "falsifiable by observable behavior" in SUB_ISSUE_PROMPT
+    assert "satisfied by asserting on a mock" in SUB_ISSUE_PROMPT

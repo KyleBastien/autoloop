@@ -7,11 +7,13 @@ from unittest.mock import patch
 import pytest
 from autoloop.auto_close_parent import (
     all_siblings_closed,
+    build_close_comment,
     check_and_close_parent,
     close_parent_chain,
     close_parent_with_comment,
     count_subissues,
     get_pr_body,
+    parent_criteria,
     parse_closes_ref,
     parse_parent_ref,
 )
@@ -310,3 +312,65 @@ def test_close_parent_chain_linear_ids():
     )
     closed = close_parent_chain(src, "ENG-20")
     assert closed == ["ENG-10"]
+
+
+# --- parent's own acceptance criteria survive the auto-close ---
+
+_PARENT_BODY = """## Summary
+
+Do the thing.
+
+## Acceptance Criteria
+
+- [ ] The guard reads state back before acting
+- [ ] A regression test covers it
+
+## Context
+
+Parent of some work.
+"""
+
+
+def test_parent_criteria_extracts_checklist_lines():
+    assert parent_criteria(_PARENT_BODY) == [
+        "- [ ] The guard reads state back before acting",
+        "- [ ] A regression test covers it",
+    ]
+
+
+def test_parent_criteria_empty_without_section():
+    assert parent_criteria("## Summary\n\nNo criteria here.\n") == []
+
+
+def test_parent_criteria_empty_body():
+    assert parent_criteria("") == []
+
+
+def test_parent_criteria_ignores_prose_in_the_section():
+    body = "## Acceptance Criteria\n\nSome preamble.\n- [ ] Real one\n"
+    assert parent_criteria(body) == ["- [ ] Real one"]
+
+
+def test_build_close_comment_warns_criteria_were_not_verified():
+    comment = build_close_comment(2, ["- [ ] The guard reads state back before acting"])
+    assert "All 2 sub-issues are now complete" in comment
+    assert "not** re-verified" in comment
+    assert "- [ ] The guard reads state back before acting" in comment
+
+
+def test_build_close_comment_omits_warning_without_criteria():
+    comment = build_close_comment(3, [])
+    assert comment == "Auto-closed: All 3 sub-issues are now complete."
+    assert "re-verified" not in comment
+
+
+def test_close_parent_carries_the_parent_criteria_into_the_comment():
+    """Sub-issues completing is not proof the parent is satisfied — say so on the close."""
+    source = FakeSource(bodies={7: _PARENT_BODY})
+
+    close_parent_with_comment(source, 7, 2)
+
+    assert source.closed == [7]
+    _ref, body = source.comments[0]
+    assert "- [ ] A regression test covers it" in body
+    assert "not** re-verified" in body

@@ -425,7 +425,13 @@ def build_implementation_prompt(issue: dict) -> str:
 
     step = 3
     if cfg.test_file_pattern:
-        prompt += f"{step}. Write comprehensive unit tests for every new/changed function\n"
+        prompt += (
+            f"{step}. Write unit tests for every new/changed function. At least one test"
+            f" must reach the new code through its real caller — never mock, stub or patch"
+            f" a function this change itself adds or edits, or the test still passes when"
+            f" the wiring is wrong. Mock only what a test cannot reach: network, clock,"
+            f" filesystem, subprocess.\n"
+        )
         step += 1
     prompt += f"{step}. Run `{cfg.verify_cmd}` — all tests must pass\n"
     step += 1
@@ -444,6 +450,15 @@ def build_implementation_prompt(issue: dict) -> str:
         f"- Never use real person or company names in test data\n"
         f"- Follow existing code patterns in this repo\n"
         f"- Do not add features beyond what the issue asks for\n"
+        f"- If the change can suppress an output (a guard, a filter, an early return),"
+        f" test both directions: that it stays quiet when it should, and that it still"
+        f" speaks when it should. Silencing a false alarm is how a silent failure is built\n"
+        f"- When code has to recognize its own output, match on a stable marker you set,"
+        f" never on user-facing text — display copy gets reworded and decorated\n"
+        f"- When you filter out values the system itself produces, search the codebase for"
+        f" every producer of them, not only the ones the issue names\n"
+        f"- Before committing, search for other call sites with the same defect the issue"
+        f" describes. Fix the ones the issue covers; list the rest in the commit body\n"
     )
     if cfg.test_file_pattern or cfg.lint_command:
         skippable = " or ".join(
@@ -658,7 +673,14 @@ Diff:
 Evaluate:
 1. Does the implementation satisfy each acceptance criterion?
 2. Are the tests meaningful (not just pass-through stubs)?
-3. Does the code follow existing patterns in the codebase?
+3. Does any test mock, stub or patch a function this diff itself adds or changes?
+   Name it — such a test passes even when the wiring is wrong, so the criterion it
+   claims to cover is not actually covered.
+4. If the change can suppress an output, is there a test proving it still produces
+   that output when it should?
+5. If the change recognizes the system's own output, does it match a stable marker
+   rather than user-facing text, and does it account for every producer?
+6. Does the code follow existing patterns in the codebase?
 
 Respond with JSON only:
 {{

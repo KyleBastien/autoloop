@@ -938,7 +938,7 @@ def test_build_implementation_prompt_includes_test_step_when_test_file_pattern_s
     issue = {"number": 1, "title": "Test issue", "body": "details"}
     prompt = implement_issue.build_implementation_prompt(issue)
 
-    assert "Write comprehensive unit tests" in prompt
+    assert "Write unit tests for every new/changed function" in prompt
     assert "Do not skip tests or lint" in prompt
 
 
@@ -2260,3 +2260,73 @@ def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, t
 
     assert "[Issue body truncated." in prompt
     assert "x" * 200 not in prompt
+
+
+# --- guidance that keeps a fix falsifiable (the "mocked its own seam" failure) ---
+
+
+def test_prompt_forbids_mocking_the_function_the_change_adds(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Project\n")
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
+    )
+
+    prompt = implement_issue.build_implementation_prompt(
+        {"number": 1, "title": "Test issue", "body": "details"}
+    )
+
+    assert "never mock, stub or patch a function this change itself adds or edits" in prompt
+    assert "network, clock, filesystem, subprocess" in prompt
+
+
+def test_prompt_requires_both_directions_of_a_suppressing_change(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Project\n")
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
+    )
+
+    prompt = implement_issue.build_implementation_prompt(
+        {"number": 1, "title": "Test issue", "body": "details"}
+    )
+
+    assert "test both directions" in prompt
+    assert "still" in prompt and "speaks when it should" in prompt
+
+
+def test_prompt_warns_against_matching_user_facing_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Project\n")
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
+    )
+
+    prompt = implement_issue.build_implementation_prompt(
+        {"number": 1, "title": "Test issue", "body": "details"}
+    )
+
+    assert "match on a stable marker you set" in prompt
+    assert "every producer" in prompt
+    assert "other call sites with the same defect" in prompt
+
+
+def test_review_prompt_asks_whether_a_test_mocks_the_diffs_own_function():
+    assert "mock, stub or patch a function this diff itself adds or changes" in (
+        implement_issue.REVIEW_PROMPT
+    )
+    assert "passes even when the wiring is wrong" in implement_issue.REVIEW_PROMPT
+
+
+def test_review_prompt_asks_about_suppressed_output_and_markers():
+    assert "suppress an output" in implement_issue.REVIEW_PROMPT
+    assert "stable marker" in implement_issue.REVIEW_PROMPT

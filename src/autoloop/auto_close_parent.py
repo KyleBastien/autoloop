@@ -14,6 +14,7 @@ import re
 import subprocess
 from typing import Protocol
 
+from autoloop.create_issue import parse_issue_sections
 from autoloop.sources import get_source
 
 _PARENT_RE = re.compile(r"Parent issue:\s*(#\d+|[A-Za-z][A-Za-z0-9]*-\d+)")
@@ -75,13 +76,34 @@ def count_subissues(source, parent_ref) -> int:
     )
 
 
+def parent_criteria(body: str) -> list[str]:
+    """The parent's own acceptance criteria, as checklist lines."""
+    section = parse_issue_sections(body).get("Acceptance Criteria", "")
+    return [line.strip() for line in section.split("\n") if line.strip().startswith("- [")]
+
+
+def build_close_comment(sibling_count: int, criteria: list[str]) -> str:
+    """The auto-close comment, carrying whatever the parent asked for in its own right.
+
+    Sub-issues completing is not proof the parent is satisfied: a decomposition can drop
+    a criterion the children never inherited, so the close names them rather than
+    implying they were checked.
+    """
+    comment = f"Auto-closed: All {sibling_count} sub-issues are now complete."
+    if criteria:
+        comment += (
+            "\n\nThe parent's own acceptance criteria were **not** re-verified — closing on"
+            " sub-issue completion alone. Confirm these hold, and reopen if not:\n"
+            + "\n".join(criteria)
+        )
+    return comment
+
+
 def close_parent_with_comment(source, parent_ref, sibling_count: int) -> None:
     """Close the parent issue and post an auto-close summary comment."""
+    criteria = parent_criteria(_issue_body(source, parent_ref))
     source.close_issue(parent_ref)
-    source.comment(
-        parent_ref,
-        f"Auto-closed: All {sibling_count} sub-issues are now complete.",
-    )
+    source.comment(parent_ref, build_close_comment(sibling_count, criteria))
 
 
 def _issue_body(source, ref) -> str:

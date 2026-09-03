@@ -149,6 +149,7 @@ Rules:
 - Expected behavior must describe observable outputs, not repeat the title.
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean".
+- Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
 - Reference function names and modules, not line numbers.
 - Reference the project's verify command ("{verify_cmd}") in acceptance criteria, not hardcoded tool names.
 - Reference the project's lint command ("{lint_cmd}") in acceptance criteria, or omit lint criteria if empty.
