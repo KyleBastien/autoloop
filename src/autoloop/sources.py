@@ -85,6 +85,7 @@ class IssueSource(Protocol):
     def close_issue(self, number) -> None: ...
     def ref(self, number) -> str: ...
     def ref_link(self, number) -> str: ...  # clickable form for PR/comment bodies
+    def url(self, number) -> str: ...  # absolute link, for text read outside the issue
     def create_labels(self, labels: list[tuple[str, str, str]]) -> None: ...
 
 
@@ -183,6 +184,9 @@ class GitHubSource:
     def ref_link(self, number) -> str:
         # GitHub auto-links same-repo #N in PR/issue bodies.
         return f"#{number}"
+
+    def url(self, number) -> str:
+        return f"https://github.com/{self.repo}/issues/{number}"
 
     def create_labels(self, labels) -> None:
         for name, color, description in labels:
@@ -418,7 +422,10 @@ class LinearSource:
 
     def ref_link(self, number) -> str:
         # GitHub won't auto-link a Linear id in a PR body — emit a markdown link.
-        return f"[{number}](https://linear.app/{self._workspace_key()}/issue/{number})"
+        return f"[{number}]({self.url(number)})"
+
+    def url(self, number) -> str:
+        return f"https://linear.app/{self._workspace_key()}/issue/{number}"
 
     def create_labels(self, labels) -> None:
         team = self._team()

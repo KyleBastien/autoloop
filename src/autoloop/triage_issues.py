@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR
 from autoloop.create_issue import build_issue_body
+from autoloop.implement_issue import detect_issue_type
 from autoloop.sources import get_source
 
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
@@ -61,6 +62,28 @@ SIZE ESTIMATION:
 PROJECT COMMANDS:
 - Test: {cfg.verify_cmd}
 - Lint: {cfg.lint_command}
+
+DECOMPOSITION CONSTRAINTS (for "needs-decomposition" verdict):
+1. Decompose by LOGICAL UNIT OF CHANGE, not by individual acceptance criterion.
+   Group related criteria that form a coherent PR (50-200 lines of change).
+2. Group acceptance criteria that modify the same file(s) into ONE sub-issue.
+3. Test files, fixtures, and related test helpers belong in ONE sub-issue.
+4. Never create a sub-issue smaller than 2 story points (~50 lines of code).
+   Merge anything smaller with a related sub-issue.
+5. Never produce more than 12 sub-issues from a single parent issue.
+6. If multiple criteria are trivial (< 10 lines each), group them by module or theme.
+
+Sub-issue size calibration:
+- 1 point (< 30 lines): Too small — MUST be merged with another sub-issue
+- 2 points (30-80 lines): Minimum viable sub-issue
+- 3 points (80-150 lines): Standard sub-issue
+- 5 points (150-300 lines): Large — only split if clearly separable
+- 8+ points (300+ lines): Must be further decomposed
+
+Before returning a decomposition, self-check:
+- Any sub-issue < 2 points? → merge it with a related neighbor
+- Multiple sub-issues targeting the same file? → merge them
+- More than 12 sub-issues? → re-decompose at a higher abstraction level
 
 VERDICT:
 - "ready" if template complete AND estimated ≤{cfg.max_story_points} points
@@ -113,6 +136,9 @@ Sub-issue: {step_title}
 Files: {step_files}
 Reason for ordering: {step_reason}
 
+Project verification command: {verify_cmd}
+Project lint command: {lint_cmd}
+
 Respond with JSON only:
 {{
   "expected_behavior": "specific, testable description",
@@ -124,6 +150,8 @@ Rules:
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean".
 - Reference function names and modules, not line numbers.
+- Reference the project's verify command ("{verify_cmd}") in acceptance criteria, not hardcoded tool names.
+- Reference the project's lint command ("{lint_cmd}") in acceptance criteria, or omit lint criteria if empty.
 """
 
 REWRITE_PROMPT = """\
@@ -208,6 +236,100 @@ def parse_rewritten_body(stdout: str) -> str | None:
     if "## " not in text:
         return None
     return text
+
+
+def _merge_steps(a: dict, b: dict) -> dict:
+    """Merge two decomposition steps into one consolidated step."""
+    files_a = a.get("files", [])
+    files_b = b.get("files", [])
+    merged_files = sorted(set(files_a) | set(files_b))
+    points = a.get("points", 1) + b.get("points", 1)
+    why_a = a.get("why_first") or a.get("why_after", "")
+    why_b = b.get("why_first") or b.get("why_after", "")
+    why = "; ".join(filter(None, [why_a, why_b]))
+    merged_deps = list(set(a.get("depends_on", [])) | set(b.get("depends_on", [])))
+    original_orders = a.get("_original_orders", set()) | b.get("_original_orders", set())
+    return {
+        "order": min(a.get("order", 1), b.get("order", 1)),
+        "title": a["title"] + " + " + b["title"],
+        "points": points,
+        "depends_on": merged_deps,
+        "files": merged_files,
+        "why_after": why,
+        "_original_orders": original_orders,
+    }
+
+
+def validate_decomposition(decomposition: list[dict], max_sub_issues: int = 12) -> list[dict]:
+    """Consolidate over-decomposed sub-issues by merging shared-file and tiny steps."""
+    if len(decomposition) <= 1:
+        return list(decomposition)
+
+    steps = [dict(s) for s in decomposition]
+
+    # Tag each step with its original order(s) for dependency remapping
+    for s in steps:
+        s.setdefault("_original_orders", {s.get("order", 0)})
+
+    # Pass 1: Merge steps that share any file
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(steps):
+            files_i = set(steps[i].get("files", []))
+            if not files_i:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(steps):
+                files_j = set(steps[j].get("files", []))
+                if files_i & files_j:
+                    steps[i] = _merge_steps(steps[i], steps[j])
+                    files_i = set(steps[i].get("files", []))
+                    del steps[j]
+                    changed = True
+                else:
+                    j += 1
+            i += 1
+
+    # Pass 2: Absorb steps with < 2 story points into nearest neighbor
+    changed = True
+    while changed and len(steps) > 1:
+        changed = False
+        for i, s in enumerate(steps):
+            if s.get("points", 0) < 2:
+                neighbor = i + 1 if i + 1 < len(steps) else i - 1
+                steps[neighbor] = _merge_steps(steps[neighbor], steps[i])
+                del steps[i]
+                changed = True
+                break
+
+    # Pass 3: Force-merge smallest pairs until at or below cap
+    while len(steps) > max_sub_issues:
+        min_idx = min(range(len(steps)), key=lambda i: steps[i].get("points", 0))
+        neighbor = min_idx + 1 if min_idx + 1 < len(steps) else min_idx - 1
+        steps[neighbor] = _merge_steps(steps[neighbor], steps[min_idx])
+        del steps[min_idx]
+
+    # Build mapping: original order -> new step index
+    order_mapping: dict[int, int] = {}
+    for i, step in enumerate(steps, 1):
+        for orig in step.get("_original_orders", set()):
+            order_mapping[orig] = i
+
+    # Renumber and remap depends_on
+    for i, step in enumerate(steps, 1):
+        step["order"] = i
+        remapped = set()
+        for dep in step.get("depends_on", []):
+            new_idx = order_mapping.get(dep)
+            if new_idx and new_idx != i:
+                remapped.add(new_idx)
+        step["depends_on"] = sorted(remapped)
+        step.pop("_original_orders", None)
+
+    return steps
 
 
 def build_decomposition_comment(result: dict) -> str:
@@ -400,6 +522,8 @@ def suggest_sub_issue_fields(
         step_title=step["title"],
         step_files=", ".join(step.get("files", [])),
         step_reason=why,
+        verify_cmd=cfg.verify_cmd,
+        lint_cmd=cfg.lint_command,
     )
     result = run_claude(prompt, cfg.triage_model, cfg.triage_timeout)
     if not result.success:
@@ -415,6 +539,7 @@ def create_sub_issues(
 ) -> list[int]:
     """Create sub-issues from a decomposition and return their numbers."""
     src = get_source(cfg)
+    parent_type = detect_issue_type(parent_summary)
     step_to_issue: dict[int, int | str] = {}
     created: list[int | str] = []
     for step in result.get("decomposition", []):
@@ -431,10 +556,16 @@ def create_sub_issues(
             expected = step["title"]
             extra_criteria = ""
 
+        issue_type_label = {
+            "fix": "bug",
+            "refactor": "refactor",
+            "docs": "docs",
+            "chore": "chore",
+        }.get(parent_type, "feature")
         why = step.get("why_first") or step.get("why_after", "")
         body = build_issue_body(
             summary=step["title"],
-            issue_type="feature",
+            issue_type=issue_type_label,
             files="\n".join(step.get("files", [])),
             current_behavior="",
             expected=expected,
@@ -469,12 +600,30 @@ def decompose_issue(
     parent_summary: str = "",
 ):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
+    validated = dict(result)
+    validated["decomposition"] = validate_decomposition(result.get("decomposition", []))
+
     src = get_source(cfg)
+    if len(validated["decomposition"]) <= 1:
+        approve_issue(
+            number,
+            result.get("priority", "p2"),
+            "decomposition collapsed to a single unit; implementing as-is",
+            cfg,
+        )
+        return
+
     src.edit_issue(number, add_labels=["needs-decomposition"])
-    src.comment(number, build_decomposition_comment(result))
-    sub_issues = create_sub_issues(number, result, cfg, parent_summary)
+    src.comment(number, build_decomposition_comment(validated))
+    sub_issues = create_sub_issues(number, validated, cfg, parent_summary)
     if sub_issues:
         src.comment(number, build_sub_issue_summary_comment(number, sub_issues))
+        src.comment(
+            number,
+            f"Decomposed into {len(sub_issues)} sub-issues. "
+            "Closing parent — work continues in children.",
+        )
+        src.close_issue(number)
 
 
 # --- Dedup (avoid triaging/implementing the same work twice) ---
@@ -578,6 +727,29 @@ def mark_duplicate(number, canonical_ref: str, cfg: AutoLoopConfig):
     )
 
 
+def fetch_issue_body(issue_number, cfg: AutoLoopConfig) -> str:
+    """Fetch a single issue's body text."""
+    issue = get_source(cfg).get_issue(issue_number)
+    return (issue.get("body") or "") if issue else ""
+
+
+# Matches both a GitHub "#12" and a Linear "ENG-12" parent ref.
+_SUB_ISSUE_OF_RE = re.compile(r"Sub-issue of (#\d+|[A-Za-z][A-Za-z0-9]*-\d+)")
+
+
+def get_decomposition_depth(issue: dict, cfg: AutoLoopConfig) -> int:
+    """Determine how many levels of decomposition above this issue exist.
+
+    Returns 0 for root issues, 1 for direct children, 2+ for grandchildren.
+    """
+    match = _SUB_ISSUE_OF_RE.search(issue.get("body") or "")
+    if not match:
+        return 0
+    if _SUB_ISSUE_OF_RE.search(fetch_issue_body(match.group(1).lstrip("#"), cfg)):
+        return 2
+    return 1
+
+
 # --- Orchestration ---
 
 
@@ -633,7 +805,11 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
-        if is_sub_issue(issue):
+        depth = get_decomposition_depth(issue, cfg)
+        points = verdict.get("points", 0)
+        if depth >= 2 or (depth >= 1 and points <= 5):
+            approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
+        elif depth >= 1 or is_sub_issue(issue):
             # Already a decomposition product — recursing would spawn another
             # near-identical child (the loop we're fixing). Send to a human.
             src = get_source(cfg)

@@ -7,6 +7,7 @@ Usage (from the target repo root):
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from autoloop.sources import GitHubSource, LinearSource, linear_api_key
@@ -53,6 +54,11 @@ pr_reviewer = "{reviewer}"
 
 # Verification
 verify_cmd = "{verify_cmd}"
+lint_command = "{lint_cmd}"
+test_file_pattern = '{test_file_pattern}'  # regex a changed file must match to count as a test
+
+# Decomposition threshold — issues above this trigger sub-issue creation
+max_story_points = 3
 
 # Retry / truncation limits
 max_retries = 3
@@ -62,7 +68,7 @@ error_truncation = 2000
 spec_truncation = 4000
 
 # Paths the builder must never modify — issues targeting these get needs-human
-protected_paths = ["autoloop.toml"]
+protected_paths = ["autoloop.toml", ".claude/settings.json"]
 
 # Scheduling: autoloop uses systemd user timers for scheduled runs.
 # The timer_prefix controls which timers `autoloop status` looks for.
@@ -108,19 +114,19 @@ jobs:
             ];
             const body = context.payload.pull_request.body || '';
             const matches = body.match(/Closes #(\\d+)/g) || [];
-            for (const match of matches) {{
+            for (const match of matches) {
               const issueNumber = parseInt(match.replace('Closes #', ''));
-              for (const label of labels) {{
-                try {{
-                  await github.rest.issues.removeLabel({{
+              for (const label of labels) {
+                try {
+                  await github.rest.issues.removeLabel({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     issue_number: issueNumber,
                     name: label
-                  }});
-                }} catch (e) {{}}
-              }}
-            }}
+                  });
+                } catch (e) {}
+              }
+            }
 
   auto-close-parent:
     if: github.event.pull_request.merged == true
@@ -133,11 +139,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install autoloop
-        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v{version}
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
       - name: Auto-close parent issue
         env:
-          GH_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
-        run: autoloop auto-close-parent "${{{{ github.event.pull_request.number }}}}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
 """
 
 WORKFLOW_TEMPLATE_LINEAR = """\
@@ -172,12 +178,39 @@ jobs:
 
 GITIGNORE_ENTRY = "autoloop/run_history.jsonl"
 
+_PYTEST_KEYWORDS = ("pytest", "py.test")
+_JS_TEST_KEYWORDS = ("npm test", "jest", "vitest", "mocha")
+_BUILD_KEYWORDS = ("npm run build", "make build", "cargo build", "go build", "gradle build")
+
+
+def infer_test_file_pattern(verify_cmd: str) -> str | None:
+    """Infer a test_file_pattern regex from a verify command string.
+
+    Returns the pattern string, or None if the command is unrecognized.
+    """
+    cmd = verify_cmd.strip().lower()
+
+    for keyword in _BUILD_KEYWORDS:
+        if keyword in cmd:
+            return ""
+
+    for keyword in _PYTEST_KEYWORDS:
+        if keyword in cmd:
+            return r"^tests/.*\.py$"
+
+    for keyword in _JS_TEST_KEYWORDS:
+        if keyword in cmd:
+            return r"\.(test|spec)\.[jt]sx?$"
+
+    return None
+
 
 def write_toml(
     target: Path,
     repo: str,
     reviewer: str,
     verify_cmd: str,
+    lint_cmd: str = "",
     source: str = "github",
     linear_team: str = "",
 ) -> None:
@@ -185,11 +218,16 @@ def write_toml(
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
+    test_file_pattern = infer_test_file_pattern(verify_cmd)
+    if test_file_pattern is None:
+        test_file_pattern = ""
     path.write_text(
         TOML_TEMPLATE.format(
             repo=repo,
             reviewer=reviewer,
             verify_cmd=verify_cmd,
+            lint_cmd=lint_cmd,
+            test_file_pattern=test_file_pattern,
             source=source,
             linear_team=linear_team,
         )
@@ -205,8 +243,12 @@ def write_workflow(target: Path, source: str = "github") -> None:
     if path.exists():
         print("  workflow already exists, skipping (delete to regenerate)")
         return
-    template = WORKFLOW_TEMPLATE_LINEAR if source == "linear" else WORKFLOW_TEMPLATE
-    path.write_text(template.format(version=__version__))
+    # Only the Linear template is a format string (it pins @v{version} and doubles its
+    # Actions braces); the GitHub one carries single braces and is written verbatim.
+    if source == "linear":
+        path.write_text(WORKFLOW_TEMPLATE_LINEAR.format(version=__version__))
+    else:
+        path.write_text(WORKFLOW_TEMPLATE)
     print("  created .github/workflows/autoloop-cleanup.yml")
 
 
@@ -241,10 +283,108 @@ def create_labels(
         print(f"  label: {name}")
 
 
+BASE_ALLOWLIST = [
+    "Read",
+    "Edit",
+    "Write",
+    "Bash(git status)",
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git checkout *)",
+    "Bash(git branch *)",
+    "Bash(git push *)",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(gh *)",
+]
+
+DENY_LIST = [
+    "Bash(git push --force*)",
+    "Bash(git reset --hard*)",
+    "Bash(rm -rf*)",
+    "Bash(gh pr merge*)",
+]
+
+
+def _extract_command_prefixes(cmd_string: str) -> list[str]:
+    """Split a compound command on && / || / ; and return Bash allowlist entries."""
+    parts: list[str] = []
+    for sep in ("&&", "||", ";"):
+        expanded: list[str] = []
+        for part in parts or [cmd_string]:
+            expanded.extend(part.split(sep))
+        parts = expanded
+
+    entries: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        entries.append(f"Bash({part}*)")
+
+    # Deduplicate: if one entry is a prefix of another, keep only the shorter one
+    deduplicated: list[str] = []
+    sorted_entries = sorted(entries, key=len)
+    for entry in sorted_entries:
+        prefix = entry[: -len("*)")] if entry.endswith("*)") else entry
+        if not any(
+            entry != existing and prefix.startswith(existing[: -len("*)")])
+            for existing in deduplicated
+        ):
+            deduplicated.append(entry)
+    return deduplicated
+
+
+def build_settings_allowlist(verify_cmd: str, lint_cmd: str = "") -> dict:
+    """Build a .claude/settings.json dict from verify and lint commands."""
+    allow = list(BASE_ALLOWLIST)
+    allow.extend(_extract_command_prefixes(verify_cmd))
+    if lint_cmd:
+        allow.extend(_extract_command_prefixes(lint_cmd))
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for entry in allow:
+        if entry not in seen:
+            seen.add(entry)
+            unique.append(entry)
+
+    return {"permissions": {"allow": unique, "deny": list(DENY_LIST)}}
+
+
+def write_claude_settings(target: Path, verify_cmd: str, lint_cmd: str = "") -> None:
+    """Create .claude/settings.json with a minimal allowlist, or skip if it exists."""
+    claude_dir = target / ".claude"
+    path = claude_dir / "settings.json"
+
+    needed = build_settings_allowlist(verify_cmd, lint_cmd)
+
+    if path.exists():
+        existing = json.loads(path.read_text())
+        existing_allow = set(existing.get("permissions", {}).get("allow", []))
+        needed_allow = set(needed["permissions"]["allow"])
+        missing = sorted(needed_allow - existing_allow)
+        if missing:
+            print("  .claude/settings.json already exists — skipping creation")
+            print("  Entries autoloop needs but are not present:")
+            for entry in missing:
+                print(f"    + {entry}")
+            print("  Please add them manually if the builder needs them.")
+        else:
+            print("  .claude/settings.json already exists with all needed entries")
+        return
+
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(needed, indent=2) + "\n")
+    print("  created .claude/settings.json")
+
+
 def run_init(
     repo: str,
     reviewer: str = "",
     verify_cmd: str = "uv run pytest",
+    lint_cmd: str = "",
     dry_run: bool = False,
     skip_labels: bool = False,
     source: str = "github",
@@ -256,7 +396,10 @@ def run_init(
     print(f"Initializing autoloop for {repo} (source: {source}) in {target}\n")
 
     print("Config:")
-    write_toml(target, repo, reviewer, verify_cmd, source=source, linear_team=linear_team)
+    write_toml(target, repo, reviewer, verify_cmd, lint_cmd, source=source, linear_team=linear_team)
+
+    print("\nPermissions:")
+    write_claude_settings(target, verify_cmd, lint_cmd)
 
     print("\nWorkflow:")
     write_workflow(target, source=source)
@@ -274,9 +417,12 @@ def run_init(
         print("  Also add a LINEAR_API_KEY repo secret so the cleanup workflow can run.")
 
     print("\nDone! Next steps:")
-    print("  1. Review autoloop.toml")
+    print("  1. Review autoloop.toml and .claude/settings.json")
     print("  2. Commit the generated files:")
-    print("     git add autoloop.toml .github/workflows/autoloop-cleanup.yml .gitignore")
+    print(
+        "     git add autoloop.toml .claude/settings.json"
+        " .github/workflows/autoloop-cleanup.yml .gitignore"
+    )
     print('     git commit -m "feat: add autoloop pipeline"')
     print("  3. Run: autoloop triage    (to triage open issues)")
     print("  4. Run: autoloop implement (to implement top ready issue)")
@@ -296,6 +442,9 @@ def main() -> None:
         "--linear-team", default="", help="Linear team key (e.g. ENG) when --source linear"
     )
     parser.add_argument(
+        "--lint-cmd", default="", help="Lint command (e.g. 'ruff check && ruff format --check')"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print label commands without running"
     )
     parser.add_argument("--skip-labels", action="store_true", help="Skip label creation")
@@ -305,6 +454,7 @@ def main() -> None:
         args.repo,
         args.reviewer,
         args.verify_cmd,
+        args.lint_cmd,
         args.dry_run,
         args.skip_labels,
         source=args.source,

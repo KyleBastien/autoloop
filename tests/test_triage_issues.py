@@ -7,17 +7,23 @@ from unittest.mock import patch
 import autoloop.triage_issues as triage_issues
 from autoloop.claude_runner import ClaudeResult
 from autoloop.triage_issues import (
+    SUB_ISSUE_PROMPT,
+    _merge_steps,
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     build_triage_prompt,
     create_sub_issues,
+    fetch_issue_body,
     find_duplicate,
+    get_decomposition_depth,
     is_sub_issue,
     parse_duplicate_response,
     parse_file_discovery_response,
     parse_rewritten_body,
     parse_sub_issue_response,
     parse_triage_response,
+    suggest_sub_issue_fields,
+    validate_decomposition,
     validate_discovered_files,
 )
 
@@ -512,6 +518,85 @@ def test_create_sub_issues_uses_cfg_repo(monkeypatch):
         assert call[call.index("--repo") + 1] == "acme/widgets"
 
 
+def test_create_sub_issues_inherits_parent_type(monkeypatch):
+    """Sub-issues inherit the parent's issue type instead of hardcoding 'feature'."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["pyproject.toml"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nMigrate to uv\n\n## Type\nrefactor"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "## Type\nrefactor" in bodies[0]
+    assert "## Type\nfeature" not in bodies[0]
+
+
+def test_create_sub_issues_migration_parent_inherits_refactor(monkeypatch):
+    """A migration parent produces sub-issues with type refactor."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    bodies: list[str] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "gh" and cmd[2] == "create":
+            body_idx = cmd.index("--body") + 1
+            bodies.append(cmd[body_idx])
+        return FakeResult()
+
+    result = {
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 2,
+                "depends_on": [],
+                "files": ["pyproject.toml"],
+            },
+        ],
+    }
+
+    parent_body = "## Summary\nMigrate backend\n\n## Type\nmigration"
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import create_sub_issues
+
+        created = create_sub_issues(10, result, cfg, parent_summary=parent_body)
+
+    assert len(created) == 1
+    assert "## Type\nrefactor" in bodies[0]
+
+
 # --- Claude calls use cfg.triage_model ---
 
 
@@ -641,6 +726,7 @@ class _FakeSrc:
         self.created = []
         self.edits = []
         self.comments = []
+        self.closed = []
 
     def list_issues(self, *, labels=None, state="open", limit=50):
         return self._issues
@@ -655,6 +741,9 @@ class _FakeSrc:
 
     def comment(self, number, body):
         self.comments.append((number, body))
+
+    def close_issue(self, number):
+        self.closed.append(number)
 
     def ref(self, number):
         return f"#{number}"
@@ -736,3 +825,1017 @@ def test_create_sub_issues_labels_by_points(monkeypatch):
     labels_by_issue = {num: kw.get("add_labels") for num, kw in src.edits}
     assert labels_by_issue[100] == ["ready", "p2"]
     assert labels_by_issue[101] == ["needs-human"]
+
+
+# --- _merge_steps ---
+
+
+def test_merge_steps_combines_files():
+    a = {"order": 1, "title": "Add X", "points": 2, "files": ["src/a.py"], "why_first": "base"}
+    b = {"order": 3, "title": "Add Y", "points": 1, "files": ["src/b.py"], "why_after": "depends"}
+    merged = _merge_steps(a, b)
+    assert set(merged["files"]) == {"src/a.py", "src/b.py"}
+    assert merged["points"] == 3
+    assert merged["title"] == "Add X + Add Y"
+    assert merged["order"] == 1
+    assert merged["depends_on"] == []
+
+
+def test_merge_steps_deduplicates_shared_files():
+    a = {"order": 1, "title": "A", "points": 1, "files": ["f.py", "g.py"]}
+    b = {"order": 2, "title": "B", "points": 1, "files": ["f.py"]}
+    merged = _merge_steps(a, b)
+    assert merged["files"] == ["f.py", "g.py"]
+
+
+def test_merge_steps_combines_why():
+    a = {"order": 2, "title": "A", "points": 1, "files": [], "why_after": "reason A"}
+    b = {"order": 3, "title": "B", "points": 1, "files": [], "why_after": "reason B"}
+    merged = _merge_steps(a, b)
+    assert "reason A" in merged["why_after"]
+    assert "reason B" in merged["why_after"]
+
+
+# --- validate_decomposition ---
+
+
+def test_validate_decomposition_empty():
+    assert validate_decomposition([]) == []
+
+
+def test_validate_decomposition_single_step():
+    steps = [{"order": 1, "title": "Only step", "points": 3, "files": ["a.py"]}]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert result[0]["title"] == "Only step"
+
+
+def test_validate_decomposition_merges_shared_files():
+    steps = [
+        {"order": 1, "title": "Add fixture", "points": 1, "files": ["tests/conftest.py"]},
+        {"order": 2, "title": "Add another fixture", "points": 1, "files": ["tests/conftest.py"]},
+        {"order": 3, "title": "Unrelated work", "points": 3, "files": ["src/main.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    conftest_step = [s for s in result if "tests/conftest.py" in s["files"]][0]
+    assert conftest_step["points"] == 2
+
+
+def test_validate_decomposition_merges_small_steps():
+    steps = [
+        {"order": 1, "title": "Tiny fix", "points": 1, "files": ["a.py"]},
+        {"order": 2, "title": "Normal work", "points": 3, "files": ["b.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert result[0]["points"] == 4
+
+
+def test_validate_decomposition_caps_at_max():
+    steps = [
+        {"order": i, "title": f"Step {i}", "points": 2, "files": [f"file{i}.py"]}
+        for i in range(1, 21)
+    ]
+    result = validate_decomposition(steps, max_sub_issues=12)
+    assert len(result) <= 12
+
+
+def test_validate_decomposition_renumbers_orders():
+    steps = [
+        {"order": 5, "title": "A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 10, "title": "B", "points": 3, "files": ["b.py"], "depends_on": [5]},
+    ]
+    result = validate_decomposition(steps)
+    assert result[0]["order"] == 1
+    assert result[1]["order"] == 2
+    assert result[0]["depends_on"] == []
+    assert result[1]["depends_on"] == [1]
+
+
+def test_validate_decomposition_already_valid():
+    steps = [
+        {"order": 1, "title": "Core module", "points": 3, "files": ["src/core.py"]},
+        {"order": 2, "title": "API layer", "points": 3, "files": ["src/api.py"]},
+        {"order": 3, "title": "Tests", "points": 2, "files": ["tests/test_core.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    for i, step in enumerate(result, 1):
+        assert step["order"] == i
+
+
+def test_validate_decomposition_transitive_file_merge():
+    steps = [
+        {"order": 1, "title": "A", "points": 1, "files": ["x.py", "y.py"]},
+        {"order": 2, "title": "B", "points": 1, "files": ["y.py", "z.py"]},
+        {"order": 3, "title": "C", "points": 1, "files": ["z.py"]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 1
+    assert set(result[0]["files"]) == {"x.py", "y.py", "z.py"}
+
+
+def test_validate_decomposition_remaps_deps_after_merge():
+    """Dependencies should be remapped to the absorbing step's new index."""
+    steps = [
+        {"order": 1, "title": "Install packages", "points": 1, "files": ["setup.py"]},
+        {"order": 2, "title": "Configure deps", "points": 1, "files": ["setup.py"]},
+        {
+            "order": 3,
+            "title": "Add endpoint",
+            "points": 3,
+            "files": ["src/api.py"],
+            "depends_on": [2],
+        },
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 2
+    api_step = [s for s in result if "src/api.py" in s.get("files", [])][0]
+    setup_step = [s for s in result if "setup.py" in s.get("files", [])][0]
+    assert setup_step["order"] in api_step["depends_on"]
+
+
+def test_validate_decomposition_drops_self_references():
+    """A step should not depend on itself after a merge."""
+    steps = [
+        {"order": 1, "title": "Base model", "points": 1, "files": ["src/model.py"]},
+        {
+            "order": 2,
+            "title": "Model validation",
+            "points": 1,
+            "files": ["src/model.py"],
+            "depends_on": [1],
+        },
+        {"order": 3, "title": "API layer", "points": 3, "files": ["src/api.py"], "depends_on": [2]},
+    ]
+    result = validate_decomposition(steps)
+    for step in result:
+        assert step["order"] not in step["depends_on"]
+
+
+def test_validate_decomposition_preserves_chain():
+    """A dependency chain (1 -> 2 -> 3) with no merges should be preserved."""
+    steps = [
+        {
+            "order": 1,
+            "title": "Schema migration",
+            "points": 3,
+            "files": ["db/schema.py"],
+            "depends_on": [],
+        },
+        {
+            "order": 2,
+            "title": "Data migration",
+            "points": 3,
+            "files": ["db/migrate.py"],
+            "depends_on": [1],
+        },
+        {
+            "order": 3,
+            "title": "API update",
+            "points": 3,
+            "files": ["src/api.py"],
+            "depends_on": [2],
+        },
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    assert result[0]["depends_on"] == []
+    assert result[1]["depends_on"] == [1]
+    assert result[2]["depends_on"] == [2]
+
+
+def test_validate_decomposition_remaps_multiple_deps():
+    """A step depending on multiple others should have all remapped correctly."""
+    steps = [
+        {"order": 1, "title": "Step A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 2, "title": "Step B", "points": 3, "files": ["b.py"], "depends_on": []},
+        {"order": 3, "title": "Step C", "points": 3, "files": ["c.py"], "depends_on": [1, 2]},
+    ]
+    result = validate_decomposition(steps)
+    assert len(result) == 3
+    assert result[2]["depends_on"] == [1, 2]
+
+
+def test_validate_decomposition_no_internal_metadata_leak():
+    """The _original_orders tracking field should not appear in the output."""
+    steps = [
+        {"order": 1, "title": "A", "points": 3, "files": ["a.py"], "depends_on": []},
+        {"order": 2, "title": "B", "points": 3, "files": ["b.py"], "depends_on": [1]},
+    ]
+    result = validate_decomposition(steps)
+    for step in result:
+        assert "_original_orders" not in step
+
+
+def test_validate_decomposition_regression_20_criteria():
+    """A 20-criterion spec with 5 logical components should produce 5-10 sub-issues."""
+    decomposition = [
+        # Component 1: Build system (3 criteria, 1 file)
+        {
+            "order": 1,
+            "title": "Add SDK dependency",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        {
+            "order": 2,
+            "title": "Update build config",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        {
+            "order": 3,
+            "title": "Add dev dependencies",
+            "points": 1,
+            "depends_on": [],
+            "files": ["pyproject.toml"],
+        },
+        # Component 2: New module (4 criteria, 1 file)
+        {
+            "order": 4,
+            "title": "Add create_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 5,
+            "title": "Add run_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 6,
+            "title": "Add stop_agent function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        {
+            "order": 7,
+            "title": "Add list_agents function",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/agents.py"],
+        },
+        # Component 3: Integration (2 criteria, 2 files with overlap)
+        {
+            "order": 8,
+            "title": "Wire agent pipeline",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/pipeline.py"],
+        },
+        {
+            "order": 9,
+            "title": "Add error handling",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/pipeline.py", "src/errors.py"],
+        },
+        # Component 4: Tests (8 criteria, 3 files)
+        {
+            "order": 10,
+            "title": "Add mock_agent fixture",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/conftest.py"],
+        },
+        {
+            "order": 11,
+            "title": "Add mock_pipeline fixture",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/conftest.py"],
+        },
+        {
+            "order": 12,
+            "title": "Test create_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 13,
+            "title": "Test run_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 14,
+            "title": "Test stop_agent",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 15,
+            "title": "Test list_agents",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_agents.py"],
+        },
+        {
+            "order": 16,
+            "title": "Test pipeline wiring",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_pipeline.py"],
+        },
+        {
+            "order": 17,
+            "title": "Test error handling",
+            "points": 1,
+            "depends_on": [],
+            "files": ["tests/test_pipeline.py"],
+        },
+        # Component 5: Cleanup (3 criteria, no shared files)
+        {
+            "order": 18,
+            "title": "Delete legacy agent module",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/old_agent.py"],
+        },
+        {
+            "order": 19,
+            "title": "Delete legacy pipeline",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/old_pipeline.py"],
+        },
+        {
+            "order": 20,
+            "title": "Update imports",
+            "points": 1,
+            "depends_on": [],
+            "files": ["src/main.py"],
+        },
+    ]
+    result = validate_decomposition(decomposition)
+    assert len(result) <= 10, f"Expected ≤10 sub-issues, got {len(result)}"
+    assert len(result) >= 5, f"Expected ≥5 sub-issues, got {len(result)}"
+    for step in result:
+        assert step["points"] >= 2, (
+            f"Sub-issue '{step['title']}' is too small ({step['points']} pts)"
+        )
+
+
+# --- Decomposition constraints in triage prompt ---
+
+
+def test_build_triage_prompt_includes_decomposition_constraints():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "DECOMPOSITION CONSTRAINTS" in prompt
+    assert "LOGICAL UNIT OF CHANGE" in prompt
+    assert "same file" in prompt
+    assert "12 sub-issues" in prompt
+    assert "2 story points" in prompt
+
+
+def test_build_triage_prompt_includes_size_calibration():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "Sub-issue size calibration" in prompt
+    assert "Too small" in prompt
+    assert "Minimum viable" in prompt
+
+
+def test_build_triage_prompt_includes_self_check():
+    cfg = _cfg()
+    prompt = build_triage_prompt(cfg)
+    assert "self-check" in prompt.lower()
+    assert "re-decompose" in prompt
+
+
+# --- decompose_issue uses validate_decomposition ---
+
+
+def test_decompose_issue_validates_decomposition(monkeypatch):
+    """decompose_issue should consolidate micro-issues before creating sub-issues."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    created_titles = []
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        if cmd[1] == "issue" and cmd[2] == "create":
+            title_idx = cmd.index("--title") + 1
+            created_titles.append(cmd[title_idx])
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Fix A",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+                "why_first": "start",
+            },
+            {
+                "order": 2,
+                "title": "Fix B",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+                "why_after": "same file",
+            },
+            {
+                "order": 3,
+                "title": "Fix C",
+                "points": 3,
+                "depends_on": [],
+                "files": ["src/y.py"],
+                "why_after": "separate",
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    assert len(created_titles) == 2
+    merged_title = [t for t in created_titles if "Fix A" in t and "Fix B" in t]
+    assert len(merged_title) == 1
+
+
+# --- fetch_issue_body ---
+
+
+def test_fetch_issue_body_success():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Issue body text here"})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == "Issue body text here"
+
+
+def test_fetch_issue_body_failure():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == ""
+
+
+def test_fetch_issue_body_null_body():
+    cfg = _cfg(repo="acme/widgets")
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": None})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        result = fetch_issue_body(42, cfg)
+
+    assert result == ""
+
+
+# --- get_decomposition_depth ---
+
+
+def test_get_decomposition_depth_root_issue():
+    cfg = _cfg()
+    issue = {"number": 1, "body": "Just a regular issue body."}
+    assert get_decomposition_depth(issue, cfg) == 0
+
+
+def test_get_decomposition_depth_direct_child():
+    cfg = _cfg()
+    issue = {"number": 2, "body": "Sub-issue of #1. Some details."}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Root issue with no parent reference."})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        assert get_decomposition_depth(issue, cfg) == 1
+
+
+def test_get_decomposition_depth_grandchild():
+    cfg = _cfg()
+    issue = {"number": 3, "body": "Sub-issue of #2. More details."}
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"body": "Sub-issue of #1. This is a child."})
+
+    with patch("autoloop.triage_issues.subprocess.run", return_value=FakeResult()):
+        assert get_decomposition_depth(issue, cfg) == 2
+
+
+def test_get_decomposition_depth_no_body():
+    cfg = _cfg()
+    issue = {"number": 1, "body": None}
+    assert get_decomposition_depth(issue, cfg) == 0
+
+
+# --- triage_issue caps depth ---
+
+
+def test_triage_issue_caps_depth_2_routes_to_ready(monkeypatch):
+    """A depth-2 sub-issue with needs-decomposition verdict should be approved instead."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 8,
+                    "priority": "p1",
+                    "reason": "large issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 4, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 4, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 2
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+
+    from autoloop.triage_issues import triage_issue
+
+    triage_issue({"number": 5, "title": "Test", "body": "Sub-issue of #3."}, cfg)
+
+    added = [lbl for _n, kw in src.edits for lbl in kw.get("add_labels", [])]
+    assert "ready" in added
+    assert src.created == []
+
+
+def test_triage_issue_caps_depth_1_small_points_routes_to_ready(monkeypatch):
+    """A depth-1 sub-issue with <=5 points should be approved instead of decomposed."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 5,
+                    "priority": "p1",
+                    "reason": "medium issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 3, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 2, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 1
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+
+    from autoloop.triage_issues import triage_issue
+
+    triage_issue({"number": 7, "title": "Test", "body": "Sub-issue of #3."}, cfg)
+
+    added = [lbl for _n, kw in src.edits for lbl in kw.get("add_labels", [])]
+    assert "ready" in added
+    assert src.created == []
+
+
+def test_triage_issue_allows_decomposition_depth_0(monkeypatch):
+    """A root issue (depth 0) should still be decomposed normally."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 8,
+                    "priority": "p1",
+                    "reason": "large issue",
+                    "decomposition": [
+                        {"order": 1, "title": "Part A", "points": 4, "depends_on": [], "files": []},
+                        {"order": 2, "title": "Part B", "points": 4, "depends_on": [], "files": []},
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 0
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+
+    from autoloop.triage_issues import triage_issue
+
+    triage_issue({"number": 7, "title": "Test", "body": "Root issue."}, cfg)
+
+    added = [lbl for _n, kw in src.edits for lbl in kw.get("add_labels", [])]
+    assert "needs-decomposition" in added
+
+
+# --- decompose_issue closes parent ---
+
+
+def test_decompose_issue_closes_parent_after_children(monkeypatch):
+    """decompose_issue should close the parent issue after filing sub-issues."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 3, "depends_on": [], "files": ["src/a.py"]},
+            {"order": 2, "title": "Step 2", "points": 2, "depends_on": [], "files": ["src/b.py"]},
+        ],
+    }
+
+    from autoloop.triage_issues import decompose_issue
+
+    decompose_issue(10, result, cfg, "parent summary")
+
+    assert src.closed == [10]
+    bodies = [body for number, body in src.comments if number == 10]
+    assert any("Decomposed into" in b and "sub-issues" in b for b in bodies)
+
+
+# --- SUB_ISSUE_PROMPT uses project commands ---
+
+
+def test_decompose_issue_collapsed_to_one_approves_instead(monkeypatch):
+    """When validation merges all steps into 1, decompose_issue should approve the parent."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "priority": "p1",
+        "reason": "large issue",
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Fix A",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+            },
+            {
+                "order": 2,
+                "title": "Fix B",
+                "points": 1,
+                "depends_on": [],
+                "files": ["src/x.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert len(label_calls) == 1
+    label_value = label_calls[0][label_calls[0].index("--add-label") + 1]
+    assert "ready" in label_value
+    assert "p1" in label_value
+    assert "needs-decomposition" not in label_value
+
+    comment_calls = [c for c in calls if "comment" in c and "--body" in c]
+    assert len(comment_calls) == 1
+    body = comment_calls[0][comment_calls[0].index("--body") + 1]
+    assert "collapsed to a single unit" in body
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+    close_calls = [c for c in calls if "close" in c]
+    assert len(close_calls) == 0
+
+
+def test_decompose_issue_collapsed_uses_default_priority(monkeypatch):
+    """When result has no priority, collapsed decomposition defaults to p2."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {"order": 1, "title": "All work", "points": 1, "depends_on": [], "files": ["a.py"]},
+            {"order": 2, "title": "Same file", "points": 1, "depends_on": [], "files": ["a.py"]},
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    label_value = label_calls[0][label_calls[0].index("--add-label") + 1]
+    assert "p2" in label_value
+
+
+def test_decompose_issue_two_steps_still_decomposes(monkeypatch):
+    """When validation keeps 2+ steps, decompose_issue should proceed normally."""
+    cfg = _cfg(repo="acme/widgets")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    result = {
+        "points": 5,
+        "decomposition": [
+            {
+                "order": 1,
+                "title": "Step 1",
+                "points": 3,
+                "depends_on": [],
+                "files": ["src/a.py"],
+            },
+            {
+                "order": 2,
+                "title": "Step 2",
+                "points": 2,
+                "depends_on": [],
+                "files": ["src/b.py"],
+            },
+        ],
+    }
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import decompose_issue
+
+        decompose_issue(10, result, cfg, "parent summary")
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 2
+
+
+def test_triage_issue_collapsed_decomposition_routes_to_ready(monkeypatch):
+    """End-to-end: triage_issue with decomposition that collapses to 1 step."""
+    cfg = _cfg()
+
+    def fake_load():
+        return "src/module.py\n", "# CLAUDE.md"
+
+    monkeypatch.setattr("autoloop.triage_issues.load_project_context", fake_load)
+
+    def fake_run_claude(prompt, model, timeout):
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "verdict": "needs-decomposition",
+                    "points": 5,
+                    "priority": "p1",
+                    "reason": "needs splitting",
+                    "decomposition": [
+                        {
+                            "order": 1,
+                            "title": "Part A",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                        {
+                            "order": 2,
+                            "title": "Part B",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                        {
+                            "order": 3,
+                            "title": "Part C",
+                            "points": 1,
+                            "depends_on": [],
+                            "files": ["src/shared.py"],
+                        },
+                    ],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+
+    def fake_get_depth(issue, cfg):
+        return 0
+
+    monkeypatch.setattr("autoloop.triage_issues.get_decomposition_depth", fake_get_depth)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.triage_issues.subprocess.run", side_effect=fake_run):
+        from autoloop.triage_issues import triage_issue
+
+        triage_issue({"number": 42, "title": "Big issue", "body": "Root issue."}, cfg)
+
+    label_calls = [c for c in calls if "edit" in c and "--add-label" in c]
+    assert any("ready" in c[c.index("--add-label") + 1] for c in label_calls)
+    assert not any("needs-decomposition" in c[c.index("--add-label") + 1] for c in label_calls)
+
+    create_calls = [c for c in calls if "create" in c]
+    assert len(create_calls) == 0
+
+    close_calls = [c for c in calls if "close" in c]
+    assert len(close_calls) == 0
+
+    comment_calls = [c for c in calls if "comment" in c and "--body" in c]
+    body_texts = [c[c.index("--body") + 1] for c in comment_calls]
+    assert any("collapsed to a single unit" in b for b in body_texts)
+
+
+# --- SUB_ISSUE_PROMPT uses project commands ---
+
+
+def test_sub_issue_prompt_has_no_hardcoded_python_commands():
+    assert "uv run pytest" not in SUB_ISSUE_PROMPT
+    assert "uv run ruff" not in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_includes_verify_and_lint_placeholders():
+    assert "{verify_cmd}" in SUB_ISSUE_PROMPT
+    assert "{lint_cmd}" in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_renders_with_node_commands():
+    rendered = SUB_ISSUE_PROMPT.format(
+        parent_number=1,
+        parent_summary="Parent summary",
+        step_title="Add widget",
+        step_files="src/widget.ts",
+        step_reason="core module",
+        verify_cmd="npm run build",
+        lint_cmd="",
+    )
+    assert "npm run build" in rendered
+    assert "uv run pytest" not in rendered
+    assert "uv run ruff" not in rendered
+
+
+def test_sub_issue_prompt_renders_with_python_commands():
+    rendered = SUB_ISSUE_PROMPT.format(
+        parent_number=1,
+        parent_summary="Parent summary",
+        step_title="Add parser",
+        step_files="src/parser.py",
+        step_reason="core module",
+        verify_cmd="uv run pytest",
+        lint_cmd="uv run ruff check && uv run ruff format --check",
+    )
+    assert "uv run pytest" in rendered
+    assert "uv run ruff check" in rendered
+
+
+def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
+    cfg = _cfg(verify_cmd="npm test", lint_command="eslint .")
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps(
+                {
+                    "expected_behavior": "works",
+                    "acceptance_criteria": ["tests pass"],
+                }
+            ),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+
+    step = {"title": "Add feature", "files": ["src/app.js"], "why_first": "needed"}
+    suggest_sub_issue_fields(10, "parent summary", step, cfg)
+
+    assert "npm test" in captured["prompt"]
+    assert "eslint ." in captured["prompt"]
+    assert "uv run pytest" not in captured["prompt"]
+    assert "uv run ruff" not in captured["prompt"]

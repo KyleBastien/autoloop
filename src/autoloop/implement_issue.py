@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import time
@@ -22,6 +23,14 @@ cfg = None
 
 LOCKFILE = REPO_DIR / ".autoloop.lock"
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
+
+EMPTY_BRANCH_DIAGNOSTIC = """\
+No changes were produced by the implementation agent.
+This usually means the agent could not act, not that the code is wrong.
+Likely causes:
+ 1. Missing .claude/settings.json permissions (run: autoloop init to scaffold)
+ 2. An active Claude Code session in this directory (close it or run elsewhere)
+ 3. The inner claude invocation failed to start (check claude CLI auth)"""
 
 
 # --- Pure functions (testable without mocking) ---
@@ -37,6 +46,18 @@ def build_branch_name(issue: dict) -> str:
     """Slugify issue into a branch name (embeds the issue id for Linear auto-linking)."""
     slug = re.sub(r"[^a-z0-9]+", "-", issue["title"].lower()).strip("-")[:50]
     return f"autoloop/{str(issue['number']).lower()}-{slug}"
+
+
+def truncate_spec(body: str, max_chars: int, issue_url: str = "") -> str:
+    """Truncate an issue spec to *max_chars*, preserving the beginning."""
+    if max_chars <= 0 or len(body) <= max_chars:
+        return body
+    truncated = body[:max_chars]
+    note = "\n\n[Issue body truncated."
+    if issue_url:
+        note += f" Full issue: {issue_url}"
+    note += "]"
+    return truncated + note
 
 
 def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:
@@ -58,6 +79,12 @@ def detect_issue_type(body: str) -> str:
         return "fix"
     if "## type\nrefactor" in body_lower:
         return "refactor"
+    if "## type\nmigration" in body_lower:
+        return "refactor"
+    if "## type\ndocs" in body_lower:
+        return "docs"
+    if "## type\nchore" in body_lower:
+        return "chore"
     return "feat"
 
 
@@ -76,12 +103,11 @@ def build_pr_body(
     if parent is not None:
         body += f"Parent: {src.ref_link(parent)}\n"
     body += (
-        f"\n## Summary\n"
-        f"{issue['title']}\n\n"
-        f"## Test Plan\n"
-        f"- `{cfg.verify_cmd}` — all tests pass\n"
-        f"- `{cfg.lint_command}` — clean\n\n"
+        f"\n## Summary\n{issue['title']}\n\n## Test Plan\n- `{cfg.verify_cmd}` — all tests pass\n"
     )
+    if cfg.lint_command:
+        body += f"- `{cfg.lint_command}` — clean\n"
+    body += "\n"
     if attempts > 0:
         body += (
             f"## AutoLoop Run Stats\n"
@@ -100,9 +126,10 @@ def collect_verification_errors(
     test_rc: int,
     test_out: str,
     lint_rc: int,
-    fmt_rc: int,
     changed_files: list[str],
     test_file_pattern: str = r"^tests/.*\.py$",
+    issue_type: str = "feat",
+    test_gate_skip_types: list[str] | None = None,
 ) -> list[str]:
     """Build error list from verification subprocess results."""
     errors = []
@@ -110,11 +137,13 @@ def collect_verification_errors(
         errors.append("No commits on branch")
     if test_rc != 0:
         errors.append(f"Tests failed:\n{test_out[-500:]}")
-    if lint_rc != 0 or fmt_rc != 0:
+    if lint_rc != 0:
         errors.append("Lint or format check failed")
-    test_files = [f for f in changed_files if re.search(test_file_pattern, f)]
-    if not test_files:
-        errors.append("No test files were added or modified")
+    skip_types = test_gate_skip_types if test_gate_skip_types is not None else []
+    if test_file_pattern and issue_type not in skip_types:
+        test_files = [f for f in changed_files if re.search(test_file_pattern, f)]
+        if not test_files:
+            errors.append("No test files were added or modified")
     return errors
 
 
@@ -164,6 +193,94 @@ def log_run(
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+# --- Active session detection ---
+
+
+def detect_active_claude_session(project_dir: str | None = None) -> bool | None:
+    """Check if an interactive Claude Code session is active in the project directory.
+
+    Returns True if a session is detected, False if none found, or None if
+    detection is inconclusive (tools unavailable).
+    """
+    if project_dir is None:
+        project_dir = str(REPO_DIR)
+
+    project_dir = os.path.realpath(project_dir)
+    logging.debug("detect_active_claude_session: resolved project_dir=%s", project_dir)
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", "claude"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+
+    pids = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if len(parts) > 1 and "--dangerously-skip-permissions" not in parts[1]:
+            pids.append(pid)
+
+    if not pids:
+        return False
+
+    if platform.system() == "Darwin":
+        return _check_cwd_lsof(pids, project_dir)
+    return _check_cwd_proc(pids, project_dir)
+
+
+def _check_cwd_lsof(pids: list[int], project_dir: str) -> bool | None:
+    """Use lsof to check if any pid has cwd matching project_dir (macOS)."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fn"]
+            + [item for pid in pids for item in ("-p", str(pid))],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        if line.startswith("n"):
+            cwd = os.path.realpath(line[1:])
+            logging.debug("detect_active_claude_session: session cwd=%s", cwd)
+            if cwd == project_dir:
+                return True
+
+    return False
+
+
+def _check_cwd_proc(pids: list[int], project_dir: str) -> bool | None:
+    """Use /proc to check if any pid has cwd matching project_dir (Linux)."""
+    checked_any = False
+    for pid in pids:
+        try:
+            cwd = os.path.realpath(f"/proc/{pid}/cwd")
+            checked_any = True
+            logging.debug("detect_active_claude_session: session cwd=%s", cwd)
+            if cwd == project_dir:
+                return True
+        except (OSError, PermissionError):
+            continue
+
+    return False if checked_any else None
 
 
 # --- Subprocess functions ---
@@ -292,8 +409,11 @@ def build_implementation_prompt(issue: dict) -> str:
             metric_targets,
         )
 
-    issue_ref = get_source(cfg).ref(issue["number"])
-    return (
+    src = get_source(cfg)
+    issue_ref = src.ref(issue["number"])
+    full_context = truncate_spec(full_context, cfg.spec_truncation, src.url(issue["number"]))
+
+    prompt = (
         f"## Task\n\n"
         f"Implement issue {issue_ref}: {issue['title']}\n\n"
         f"## Issue Details\n\n{full_context}\n\n"
@@ -301,11 +421,21 @@ def build_implementation_prompt(issue: dict) -> str:
         f"## Implementation Checklist\n\n"
         f"1. Read the files listed in 'Files to Modify'\n"
         f"2. Implement the changes described in the issue\n"
-        f"3. Write comprehensive unit tests for every new/changed function\n"
-        f"4. Run `{cfg.verify_cmd}` — all tests must pass\n"
-        f"5. Run `uv run ruff check && uv run ruff format` — must be clean\n"
-        f"6. If README.md needs updating (new tools, commands), update it\n"
-        f"7. Stage and commit:\n"
+    )
+
+    step = 3
+    if cfg.test_file_pattern:
+        prompt += f"{step}. Write comprehensive unit tests for every new/changed function\n"
+        step += 1
+    prompt += f"{step}. Run `{cfg.verify_cmd}` — all tests must pass\n"
+    step += 1
+    if cfg.lint_command:
+        prompt += f"{step}. Run `{cfg.lint_command}` — must be clean\n"
+        step += 1
+    prompt += f"{step}. If README.md needs updating (new tools, commands), update it\n"
+    step += 1
+    prompt += (
+        f"{step}. Stage and commit:\n"
         f"   `git add <specific files>`\n"
         f"   `git commit -m '<type>: <description> ({issue_ref})'\n"
         f"   Types: fix (bugs), feat (features), refactor\n"
@@ -314,9 +444,20 @@ def build_implementation_prompt(issue: dict) -> str:
         f"- Never use real person or company names in test data\n"
         f"- Follow existing code patterns in this repo\n"
         f"- Do not add features beyond what the issue asks for\n"
-        f"- Do not skip tests or lint\n"
-        f"- Do not run git push\n"
     )
+    if cfg.test_file_pattern or cfg.lint_command:
+        skippable = " or ".join(
+            part
+            for part in (
+                "tests" if cfg.test_file_pattern else "",
+                "lint" if cfg.lint_command else "",
+            )
+            if part
+        )
+        prompt += f"- Do not skip {skippable}\n"
+    prompt += "- Do not run git push\n"
+
+    return prompt
 
 
 DESIGN_PROMPT = (
@@ -403,6 +544,23 @@ def design_gate(issue: dict, require_design: bool = False) -> bool:
     return False
 
 
+def build_timeout_comment(attempt: int, timeout_seconds: int) -> str:
+    """Build an actionable guidance comment for implementation timeout."""
+    return (
+        f"**AutoLoop Attempt {attempt} failed: implementation timeout ({timeout_seconds}s)**\n\n"
+        f"Possible fixes:\n"
+        f"- Increase timeout: set `impl_timeout = {timeout_seconds * 2}` in autoloop.toml\n"
+        f"- Or set env var: `AUTOLOOP_TIMEOUT={timeout_seconds * 2}`\n"
+        f"- Decompose the issue into smaller sub-issues (target ≤ 2 story points)\n"
+        f"- Add implementation hints to the issue body to reduce exploration time"
+    )
+
+
+def post_timeout_failure(number, attempt: int, timeout_seconds: int):
+    """Post timeout failure with actionable guidance as a comment on the issue."""
+    get_source(cfg).comment(number, build_timeout_comment(attempt, timeout_seconds))
+
+
 def post_attempt_failure(number, attempt: int, errors: str):
     """Post verification failure as a comment on the issue."""
     comment = f"**AutoLoop Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
@@ -423,7 +581,19 @@ def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
     return run_claude(prompt, cfg.impl_model, cfg.impl_timeout)
 
 
-def verify_implementation(branch: str) -> tuple[bool, str]:
+def is_branch_empty(branch: str) -> bool:
+    """Return True if the branch has zero commits ahead of main."""
+    result = subprocess.run(
+        ["git", "rev-list", "--count", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    )
+    count = result.stdout.strip() if result.returncode == 0 else ""
+    return count == "0" or count == ""
+
+
+def verify_implementation(branch: str, issue_body: str = "") -> tuple[bool, str]:
     """Verify the agent actually produced valid work."""
     ahead = subprocess.run(
         ["git", "rev-list", "--count", f"main..{branch}"],
@@ -431,23 +601,28 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         text=True,
         cwd=REPO_DIR,
     )
+
     # A verify command that times out is a FAILED ATTEMPT, not a run-killer:
     # catch TimeoutExpired so the retry loop keeps going (it used to propagate
     # to the outer except, abandoning the issue and skipping remaining retries).
     def _run_check(cmd) -> tuple[int, str]:
         try:
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                cwd=REPO_DIR, timeout=cfg.test_timeout,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=REPO_DIR,
+                timeout=cfg.test_timeout,
             )
             return r.returncode, r.stdout
         except subprocess.TimeoutExpired:
             return 1, f"`{cmd}` timed out after {cfg.test_timeout}s"
 
     test_rc, test_out = _run_check(cfg.verify_cmd)
-    # Use the configured lint command (covers format too); not hardcoded ruff,
-    # so non-Python repos (e.g. `pnpm run lint`) verify correctly.
-    lint_rc, _lint_out = _run_check(cfg.lint_command)
+    # The configured lint command covers format too, and is optional: repos that
+    # set none skip the check rather than failing it.
+    lint_rc = _run_check(cfg.lint_command)[0] if cfg.lint_command else 0
     diff = subprocess.run(
         ["git", "diff", "--name-only", "main"],
         capture_output=True,
@@ -461,9 +636,10 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         test_rc=test_rc,
         test_out=test_out,
         lint_rc=lint_rc,
-        fmt_rc=0,
         changed_files=changed,
         test_file_pattern=cfg.test_file_pattern,
+        issue_type=detect_issue_type(issue_body),
+        test_gate_skip_types=cfg.test_gate_skip_types,
     )
     if errors:
         return False, "\n".join(errors)
@@ -672,12 +848,27 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         print(f"  Branch: {branch}")
 
         last_errors = None
+        empty_branch_failure = False
+        timeout_failure = False
         for attempt in range(1, cfg.max_retries + 1):
             print(f"  Attempt {attempt}/{cfg.max_retries}...")
-            claude_results.append(implement(issue, previous_errors=last_errors))
+            result = implement(issue, previous_errors=last_errors)
+            claude_results.append(result)
             final_attempt = attempt
 
-            valid, errors = verify_implementation(branch)
+            if result.timed_out:
+                print(f"  Implementation timed out after {cfg.impl_timeout}s.")
+                post_timeout_failure(issue["number"], attempt, cfg.impl_timeout)
+                timeout_failure = True
+                break
+
+            if is_branch_empty(branch):
+                print(f"  {EMPTY_BRANCH_DIAGNOSTIC}")
+                post_attempt_failure(issue["number"], attempt, EMPTY_BRANCH_DIAGNOSTIC)
+                empty_branch_failure = True
+                break
+
+            valid, errors = verify_implementation(branch, issue_body=issue.get("body", ""))
             if not valid:
                 print(f"  Verification failed:\n{errors}")
                 last_errors = errors
@@ -703,7 +894,12 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         total_cache_read = sum(r.cache_read_tokens for r in claude_results)
 
         if not success:
-            print("  All retries exhausted. Flagging needs-human; keeping ready.")
+            if timeout_failure:
+                print("  Implementation timed out. Flagging needs-human; keeping ready.")
+            elif empty_branch_failure:
+                print("  Implementation produced no changes. Flagging needs-human; keeping ready.")
+            else:
+                print("  All retries exhausted. Flagging needs-human; keeping ready.")
             # Keep 'ready' so the agent keeps taking swings at it on future runs
             # (needs-human is just a visibility flag). Within a single run the
             # attempted-set skip prevents re-picking it, so the batch still moves on.
@@ -767,9 +963,12 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
                 issue["number"], remove_labels=["in-progress"], add_labels=["ready"]
             )
             branch_name = build_branch_name(issue)
-            if branch_name in subprocess.run(
-                ["git", "branch"], capture_output=True, text=True, cwd=REPO_DIR
-            ).stdout:
+            if (
+                branch_name
+                in subprocess.run(
+                    ["git", "branch"], capture_output=True, text=True, cwd=REPO_DIR
+                ).stdout
+            ):
                 cleanup_branch(branch_name)
         except Exception:
             logging.exception("cleanup after failed #%s also failed", issue.get("number"))
@@ -796,6 +995,15 @@ def main(issue=None, max_issues=1, require_design=False):
     global cfg
     if cfg is None:
         cfg = load_config()
+
+    logging.debug("main: resolved project_dir=%s from cfg", cfg.project_dir)
+    session_detected = detect_active_claude_session(cfg.project_dir)
+    if session_detected is True:
+        print(
+            "Active Claude Code session detected in this directory.\n"
+            "Close it, or move the Claude Code session to a parent folder."
+        )
+        return
 
     if not acquire_lock():
         print("Another implementation is running. Exiting.")

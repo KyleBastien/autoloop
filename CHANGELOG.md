@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.3.5
+
+- Migrate from mcp SDK v1 to fastmcp v3 (removes `mcp<2` version pin workaround)
+
+## v0.3.4
+
+- Fix session detection blocking implement when Claude Code runs in a different directory
+
+## v0.3.3
+
+- `autoloop doctor` command: validates environment, config, CLI auth, verify_cmd, and session conflicts before first run
+- Skip test-file gate for refactor/migration/docs issues instead of failing valid work
+- Truncate oversized issue bodies to `spec_truncation` limit with link to full issue
+- Actionable timeout error messages with fix suggestions posted to GitHub
+- README: TLDR quickstart section, doctor documentation, em dash cleanup
+
+## v0.3.2
+
+- Pin `mcp<2` to fix broken MCP server import with mcp v2.0.0
+
+## v0.3.1
+
+- Skip decomposition when validation collapses to a single sub-issue; mark parent `ready` instead
+- Raise `max_story_points` default from 2 to 3; include in generated `autoloop.toml`
+
+## v0.3.0
+
+- Multi-language support: triage and implementation prompts use project commands from config instead of hardcoded Python tools
+- Default `lint_command` to empty string; no longer assumes ruff on unconfigured projects
+- `autoloop preflight` command and MCP tool to validate build environment before implementation
+- Fix cleanup workflow: add missing checkout step, install from `@main` instead of pinned tag
+
+## v0.2.3
+
+- Fix verification using hardcoded ruff commands instead of `lint_command` from config
+
+## v0.2.2
+
+- Configurable `test_pattern` replaces hardcoded `tests/*.py` check; supports any language
+- `autoloop init` infers `test_pattern` from `--verify-cmd` (empty for build-only projects)
+- Fix permission scaffold using invalid colon syntax (`Bash(git add:*)` → `Bash(git add *)`)
+
+## v0.2.1
+
+- MCP tools accept `repo_dir` parameter for multi-repo support from a single session
+- Fix `validate_decomposition` clearing dependency chains; now remaps references after merging
+
+## v0.2.0
+
+- `autoloop init` scaffolds `.claude/settings.json` with minimal permissions for headless runs
+- Detect active Claude Code session before implement; fail fast with actionable error
+- Empty-branch diagnostic: report probable causes instead of misleading lint/test failures
+- Cap decomposition depth at 2 levels; close parent issues after children are filed
+- README restructured with platform support (macOS/Linux), mode framing, and local-mode notes
+
+## v0.1.8
+
+- Validate decomposition: merge shared-file steps, absorb tiny sub-issues, cap at 12 per parent
+- Rename spec parser tag from `## Enhancement` to `## Task` with backward compatibility
+
 ## v0.1.7
 
 - Recursive auto-close walks nested parent chains

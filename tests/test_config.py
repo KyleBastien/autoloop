@@ -42,6 +42,19 @@ def test_load_from_toml(autoloop_toml, monkeypatch):
     assert config.triage_labels == ["ready", "blocked"]
 
 
+def test_load_config_sets_project_dir_from_config_path(tmp_path, monkeypatch):
+    for var in ("AUTOLOOP_TRIAGE_MODEL", "AUTOLOOP_IMPL_MODEL", "AUTOLOOP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+
+    subdir = tmp_path / "nested" / "project"
+    subdir.mkdir(parents=True)
+    toml_path = subdir / "autoloop.toml"
+    toml_path.write_text('repo = "acme-corp/widget"\n')
+
+    config = load_config(toml_path)
+    assert config.project_dir == str(subdir.resolve())
+
+
 def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     for var in (
         "AUTOLOOP_TRIAGE_MODEL",
@@ -60,8 +73,8 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.impl_model == "claude-opus-4-6[1m]"
     assert config.impl_timeout == 900
     assert config.verify_cmd == "uv run pytest"
-    assert config.lint_command == "uv run ruff check && uv run ruff format --check"
-    assert config.max_story_points == 2
+    assert config.lint_command == ""
+    assert config.max_story_points == 3
     assert len(config.triage_labels) == 7
 
 
@@ -198,6 +211,61 @@ def test_touches_protected_path_multiple_protected():
         touches_protected_path(["autoloop.toml", "src/main.py"], ["autoloop/", "autoloop.toml"])
         is True
     )
+
+
+def test_lint_command_defaults_to_empty():
+    config = AutoLoopConfig()
+    assert config.lint_command == ""
+
+
+def test_lint_command_loaded_from_toml(autoloop_toml, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+        "AUTOLOOP_TRIAGE_TIMEOUT",
+        "AUTOLOOP_TEST_TIMEOUT",
+        "AUTOLOOP_MAX_RETRIES",
+        "AUTOLOOP_REPO",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    config = load_config(autoloop_toml)
+    assert config.lint_command == "echo lint"
+
+
+def test_test_file_pattern_default():
+    config = AutoLoopConfig()
+    assert config.test_file_pattern == r"^tests/.*\.py$"
+
+
+def test_test_file_pattern_loaded_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    # A TOML literal string, the way `autoloop init` writes a regex pattern.
+    toml_path.write_text("test_file_pattern = '\\.test\\.ts$'\n")
+    config = load_config(toml_path)
+    assert config.test_file_pattern == r"\.test\.ts$"
+
+
+def test_test_file_pattern_empty_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('test_file_pattern = ""\n')
+    config = load_config(toml_path)
+    assert config.test_file_pattern == ""
 
 
 def test_protected_paths_default():

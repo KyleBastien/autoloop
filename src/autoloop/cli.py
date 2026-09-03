@@ -74,6 +74,12 @@ def main():
     )
     acp_parser.add_argument("pr_number", type=int, help="PR number to check")
 
+    # doctor
+    subparsers.add_parser("doctor", help="Run environment and config checks")
+
+    # preflight
+    subparsers.add_parser("preflight", help="Run verify and lint commands on the current branch")
+
     # version (also accessible via --version)
     subparsers.add_parser("version", help="Print installed version")
 
@@ -142,6 +148,31 @@ def main():
             print(f"Closed parent issue #{result}")
         else:
             print("No parent issue to close.")
+
+    elif args.command == "doctor":
+        from autoloop.doctor import get_checks, run_checks
+
+        results = run_checks(get_checks())
+        if any(not r.passed for r in results):
+            sys.exit(1)
+
+    elif args.command == "preflight":
+        from autoloop.config import load_config
+        from autoloop.preflight import run_preflight
+
+        cfg = load_config()
+        results = run_preflight(cfg)
+        any_failed = False
+        for name, result in results.items():
+            if result["skipped"]:
+                print(f"  {name}: skipped")
+                continue
+            status = "pass" if result["passed"] else "FAIL"
+            print(f"  {name}: {status} ({result['elapsed']:.2f}s)")
+            if not result["passed"]:
+                any_failed = True
+                print(result["output"])
+        sys.exit(1 if any_failed else 0)
 
 
 def _show_status():

@@ -24,18 +24,19 @@ class AutoLoopConfig:
     test_timeout: int = 120
     pr_reviewer: str = "andywidjaja"
     max_retries: int = 3
-    max_story_points: int = 2
+    max_story_points: int = 3
     tree_truncation: int = 3000
     diff_truncation: int = 8000
     error_truncation: int = 2000
     spec_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
-    lint_command: str = "uv run ruff check && uv run ruff format --check"
-    # Regex a changed file must match to count as a test (verify requires ≥1).
+    lint_command: str = ""
+    # Regex a changed file must match to count as a test. Empty disables the gate.
     # Default is Python; JS/TS repos set e.g. r"\.(test|spec)\.[jt]sx?$".
     test_file_pattern: str = r"^tests/.*\.py$"
     timer_prefix: str = "autoloop"
     protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
+    test_gate_skip_types: list[str] = field(default_factory=lambda: ["refactor", "docs", "chore"])
     triage_labels: list[str] = field(
         default_factory=lambda: [
             "ready",
@@ -47,6 +48,7 @@ class AutoLoopConfig:
             "duplicate",
         ]
     )
+    project_dir: str = ""
 
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
@@ -74,6 +76,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     config = AutoLoopConfig()
+    config.project_dir = str(config_path.parent.resolve())
 
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
@@ -109,6 +112,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
     if "protected_paths" in data:
         config.protected_paths = list(data["protected_paths"])
+
+    if "test_gate_skip_types" in data:
+        config.test_gate_skip_types = list(data["test_gate_skip_types"])
 
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])

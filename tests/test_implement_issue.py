@@ -9,9 +9,11 @@ import autoloop.implement_issue as implement_issue
 from autoloop.claude_runner import ClaudeResult
 from autoloop.config import AutoLoopConfig
 from autoloop.implement_issue import (
+    EMPTY_BRANCH_DIAGNOSTIC,
     acquire_lock,
     build_branch_name,
     build_pr_body,
+    build_timeout_comment,
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
@@ -19,6 +21,7 @@ from autoloop.implement_issue import (
     design_gate,
     design_issue,
     design_required,
+    detect_active_claude_session,
     detect_issue_type,
     ensure_clean_main,
     get_issue_by_number,
@@ -27,16 +30,19 @@ from autoloop.implement_issue import (
     implement,
     implement_single_issue,
     implement_targeted_issue,
+    is_branch_empty,
     log_run,
     parent_issue_number,
     parse_and_strip_metric_targets,
     parse_dependency_numbers,
     parse_review_response,
     post_in_progress_comment,
+    post_timeout_failure,
     priority_rank,
     release_lock,
     review_implementation,
     select_top_issue,
+    truncate_spec,
     unblock_ready_issues,
 )
 
@@ -57,7 +63,12 @@ def _test_cfg(**overrides):
 
 
 def _claude_result(
-    cost_usd=1.5, input_tokens=1000, output_tokens=200, cache_read_tokens=500, success=True
+    cost_usd=1.5,
+    input_tokens=1000,
+    output_tokens=200,
+    cache_read_tokens=500,
+    success=True,
+    timed_out=False,
 ):
     return ClaudeResult(
         text="",
@@ -66,6 +77,7 @@ def _claude_result(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         success=success,
+        timed_out=timed_out,
     )
 
 
@@ -128,6 +140,22 @@ def test_detect_issue_type_feature():
     assert detect_issue_type("## Summary\nAdd\n\n## Type\nfeature") == "feat"
 
 
+def test_detect_issue_type_refactor():
+    assert detect_issue_type("## Summary\nClean up\n\n## Type\nrefactor") == "refactor"
+
+
+def test_detect_issue_type_migration():
+    assert detect_issue_type("## Summary\nMigrate to uv\n\n## Type\nmigration") == "refactor"
+
+
+def test_detect_issue_type_docs():
+    assert detect_issue_type("## Summary\nUpdate docs\n\n## Type\ndocs") == "docs"
+
+
+def test_detect_issue_type_chore():
+    assert detect_issue_type("## Summary\nBump deps\n\n## Type\nchore") == "chore"
+
+
 def test_detect_issue_type_default_feat():
     assert detect_issue_type("no type section here") == "feat"
 
@@ -141,7 +169,6 @@ def test_verification_no_errors():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_new.py", "src/x.py"],
     )
     assert errors == []
@@ -153,7 +180,6 @@ def test_verification_no_commits():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_new.py"],
     )
     assert "No commits on branch" in errors
@@ -165,7 +191,6 @@ def test_verification_tests_failed():
         test_rc=1,
         test_out="FAILED test_x",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["tests/test_x.py"],
     )
     assert any("Tests failed" in e for e in errors)
@@ -177,7 +202,6 @@ def test_verification_lint_failed():
         test_rc=0,
         test_out="",
         lint_rc=1,
-        fmt_rc=0,
         changed_files=["tests/test_x.py"],
     )
     assert "Lint or format check failed" in errors
@@ -189,33 +213,30 @@ def test_verification_no_test_files():
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["src/patina/store.py"],
     )
     assert "No test files were added or modified" in errors
 
 
-def test_verification_custom_test_pattern_ts():
+def test_verification_custom_test_file_pattern_ts():
     # A TS repo: *.test.ts counts as a test file via a custom pattern.
     errors = collect_verification_errors(
         ahead_count="1",
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["packages/x/src/a.ts", "packages/x/src/a.test.ts"],
         test_file_pattern=r"\.(test|spec)\.[jt]sx?$",
     )
     assert errors == []
 
 
-def test_verification_custom_test_pattern_no_match():
+def test_verification_custom_test_file_pattern_no_match():
     errors = collect_verification_errors(
         ahead_count="1",
         test_rc=0,
         test_out="",
         lint_rc=0,
-        fmt_rc=0,
         changed_files=["packages/x/src/a.ts"],
         test_file_pattern=r"\.(test|spec)\.[jt]sx?$",
     )
@@ -228,10 +249,134 @@ def test_verification_multiple_errors():
         test_rc=1,
         test_out="fail",
         lint_rc=1,
-        fmt_rc=1,
         changed_files=[],
     )
     assert len(errors) == 4
+
+
+def test_verification_default_pattern_matches_tests_py():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py", "tests/test_foo.py"],
+        test_file_pattern=r"^tests/.*\.py$",
+    )
+    assert errors == []
+
+
+def test_verification_custom_pattern_matches():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/components/foo.test.ts", "src/app.ts"],
+        test_file_pattern=r"\.test\.ts$",
+    )
+    assert errors == []
+
+
+def test_verification_empty_pattern_skips_check():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py"],
+        test_file_pattern="",
+    )
+    assert errors == []
+
+
+def test_verification_refactor_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type="refactor",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_docs_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["README.md"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type="docs",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_chore_skips_test_gate():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["pyproject.toml"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type="chore",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_feat_still_requires_test_files():
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["src/app.py"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type="feat",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert "No test files were added or modified" in errors
+
+
+def test_verification_migration_sub_issue_skips_test_gate():
+    """A migration issue (detected as refactor) with no test changes passes."""
+    body = "## Summary\nMigrate to uv\n\n## Type\nmigration"
+    issue_type = detect_issue_type(body)
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=0,
+        test_out="",
+        lint_rc=0,
+        changed_files=["pyproject.toml", "uv.lock"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type=issue_type,
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert errors == []
+
+
+def test_verification_skip_types_still_runs_tests():
+    """Even skip-type issues fail if the test suite itself fails."""
+    errors = collect_verification_errors(
+        ahead_count="1",
+        test_rc=1,
+        test_out="FAILED test_something",
+        lint_rc=0,
+        changed_files=["pyproject.toml"],
+        test_file_pattern=r"^tests/.*\.py$",
+        issue_type="refactor",
+        test_gate_skip_types=["refactor", "docs", "chore"],
+    )
+    assert any("Tests failed" in e for e in errors)
+    assert "No test files were added or modified" not in errors
 
 
 # --- Config-driven tests: build_pr_body uses cfg ---
@@ -280,15 +425,6 @@ def test_build_pr_body_no_stats_when_zero_calls(monkeypatch):
     assert "AutoLoop Run Stats" not in body
 
 
-def test_build_pr_body_uses_cfg_lint_command_not_ruff(monkeypatch):
-    monkeypatch.setattr(
-        implement_issue, "cfg", _test_cfg(verify_cmd="pnpm test", lint_command="pnpm run lint")
-    )
-    body = build_pr_body({"number": 42, "title": "Add flag"})
-    assert "`pnpm run lint`" in body
-    assert "ruff" not in body
-
-
 def test_build_pr_body_links_parent_when_present(monkeypatch):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     body = build_pr_body({"number": 42, "title": "T", "body": "x\nParent issue: #7\n"})
@@ -299,6 +435,28 @@ def test_build_pr_body_no_parent_line_when_absent(monkeypatch):
     monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
     body = build_pr_body({"number": 42, "title": "T", "body": "no parent"})
     assert "Parent:" not in body
+
+
+def test_build_pr_body_uses_cfg_lint_command(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(lint_command="eslint . && prettier --check .")
+    )
+
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue)
+
+    assert "`eslint . && prettier --check .`" in body
+    assert "ruff" not in body
+
+
+def test_build_pr_body_omits_lint_line_when_lint_command_empty(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(lint_command=""))
+
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue)
+
+    assert "ruff" not in body
+    assert "lint" not in body.lower().split("autoloop")[0]
 
 
 # --- Config-driven tests: subprocess calls use cfg.repo ---
@@ -395,6 +553,62 @@ def test_post_attempt_failure_uses_cfg_repo(monkeypatch):
     implement_issue.post_attempt_failure(42, 2, "Tests failed")
 
     assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+
+
+# --- build_timeout_comment tests ---
+
+
+def test_build_timeout_comment_includes_timeout_duration():
+    comment = build_timeout_comment(1, 900)
+    assert "implementation timeout (900s)" in comment
+
+
+def test_build_timeout_comment_includes_attempt_number():
+    comment = build_timeout_comment(2, 900)
+    assert "Attempt 2 failed" in comment
+
+
+def test_build_timeout_comment_suggests_doubled_timeout():
+    comment = build_timeout_comment(1, 900)
+    assert "impl_timeout = 1800" in comment
+    assert "AUTOLOOP_TIMEOUT=1800" in comment
+
+
+def test_build_timeout_comment_suggests_decomposition():
+    comment = build_timeout_comment(1, 900)
+    assert "Decompose the issue into smaller sub-issues" in comment
+
+
+def test_build_timeout_comment_suggests_hints():
+    comment = build_timeout_comment(1, 900)
+    assert "implementation hints" in comment
+
+
+def test_build_timeout_comment_with_custom_timeout():
+    comment = build_timeout_comment(1, 1800)
+    assert "implementation timeout (1800s)" in comment
+    assert "impl_timeout = 3600" in comment
+    assert "AUTOLOOP_TIMEOUT=3600" in comment
+
+
+# --- post_timeout_failure tests ---
+
+
+def test_post_timeout_failure_uses_cfg_repo(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(repo="my-org/my-repo"))
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    post_timeout_failure(42, 1, 900)
+
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "my-org/my-repo"
+    body = captured["cmd"][captured["cmd"].index("--body") + 1]
+    assert "implementation timeout (900s)" in body
+    assert "impl_timeout = 1800" in body
 
 
 def test_cleanup_merged_labels_uses_cfg_repo(monkeypatch):
@@ -516,17 +730,25 @@ def test_design_issue_uses_cfg_model(monkeypatch, tmp_path):
 
 
 def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
-    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(verify_cmd="make test", test_timeout=30))
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            verify_cmd="make test",
+            test_timeout=30,
+            lint_command="eslint .",
+        ),
+    )
     captured_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
         captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
         if isinstance(cmd_or_str, str) and "make test" in cmd_or_str:
             return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if isinstance(cmd_or_str, str) and "eslint" in cmd_or_str:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
             return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
-        if isinstance(cmd_or_str, list) and "ruff" in cmd_or_str:
-            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
             return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -539,6 +761,75 @@ def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
     assert test_calls[0]["kwargs"]["shell"] is True
     assert test_calls[0]["kwargs"]["cwd"] == implement_issue.REPO_DIR
     assert test_calls[0]["kwargs"]["timeout"] == 30
+
+    lint_calls = [c for c in captured_calls if c["cmd"] == "eslint ."]
+    assert len(lint_calls) == 1
+    assert lint_calls[0]["kwargs"]["shell"] is True
+
+    ruff_calls = [c for c in captured_calls if isinstance(c["cmd"], list) and "ruff" in c["cmd"]]
+    assert len(ruff_calls) == 0
+
+    assert valid is True
+
+
+def test_verify_implementation_empty_lint_command_skips_lint(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(verify_cmd="echo ok", test_timeout=30, lint_command=""),
+    )
+    captured_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
+        if isinstance(cmd_or_str, str) and "echo ok" in cmd_or_str:
+            return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, errors = implement_issue.verify_implementation("branch")
+
+    shell_calls = [c for c in captured_calls if isinstance(c["cmd"], str)]
+    assert not any("ruff" in c["cmd"] for c in shell_calls)
+    assert not any("lint" in c["cmd"] for c in shell_calls)
+    assert valid is True
+    assert errors == ""
+
+
+def test_verify_implementation_lint_command_runs_as_shell(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(
+            verify_cmd="echo ok",
+            test_timeout=30,
+            lint_command="uv run ruff check && uv run ruff format --check",
+        ),
+    )
+    captured_calls = []
+
+    def fake_run(cmd_or_str, **kwargs):
+        captured_calls.append({"cmd": cmd_or_str, "kwargs": kwargs})
+        if isinstance(cmd_or_str, str):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if isinstance(cmd_or_str, list) and cmd_or_str[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    valid, _ = implement_issue.verify_implementation("branch")
+
+    lint_calls = [
+        c for c in captured_calls if c["cmd"] == "uv run ruff check && uv run ruff format --check"
+    ]
+    assert len(lint_calls) == 1
+    assert lint_calls[0]["kwargs"]["shell"] is True
     assert valid is True
 
 
@@ -563,6 +854,135 @@ def test_build_implementation_prompt_references_cfg_verify_cmd(monkeypatch, tmp_
 
     assert "`npm test`" in prompt
     assert "uv run pytest" not in prompt
+
+
+def test_build_implementation_prompt_uses_cfg_lint_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(lint_command="eslint . && prettier --check .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "`eslint . && prettier --check .`" in prompt
+    assert "ruff" not in prompt
+
+
+def test_build_implementation_prompt_omits_lint_when_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(lint_command="", repo="my-org/my-repo"))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "ruff" not in prompt
+    assert "lint" not in prompt.lower().split("## rules")[0]
+
+
+def test_build_implementation_prompt_omits_test_step_when_test_file_pattern_empty(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        implement_issue, "cfg", _test_cfg(test_file_pattern="", repo="my-org/my-repo")
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Write comprehensive unit tests" not in prompt
+    assert "Do not skip tests" not in prompt
+
+
+def test_build_implementation_prompt_includes_test_step_when_test_file_pattern_set(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_file_pattern=r"\.test\.ts$", lint_command="eslint .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Write comprehensive unit tests" in prompt
+    assert "Do not skip tests or lint" in prompt
+
+
+def test_build_implementation_prompt_skip_rule_lint_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_file_pattern="", lint_command="eslint .", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Do not skip lint" in prompt
+    assert "Do not skip tests" not in prompt
+
+
+def test_build_implementation_prompt_no_skip_rule_when_both_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(test_file_pattern="", lint_command="", repo="my-org/my-repo"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test issue", "body": "details"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Do not skip" not in prompt
 
 
 # --- Config-driven tests: review_implementation uses cfg.impl_model ---
@@ -697,8 +1117,6 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
             return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
         if isinstance(cmd, str):
             return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
-        if isinstance(cmd, list) and "ruff" in cmd:
-            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if isinstance(cmd, list) and cmd[:3] == ["git", "diff", "--name-only"]:
             return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -730,15 +1148,21 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
         attempt_count[0] += 1
         return _claude_result()
 
-    def fake_run(cmd, **kwargs):
-        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
-            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
     implement_single_issue(_FAKE_ISSUE)
     assert attempt_count[0] == 2
@@ -749,20 +1173,31 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     log_path = tmp_path / "run_history.jsonl"
     monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
 
-    def fake_run(cmd, **kwargs):
-        if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
-            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    attempt_count = [0]
 
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
     monkeypatch.setattr(
-        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
 
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is False
+    assert attempt_count[0] == 3
 
 
 def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
@@ -801,10 +1236,11 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
 
     verify_calls = [0]
 
-    def fake_verify(branch):
+    def fake_verify(branch, issue_body=""):
         verify_calls[0] += 1
         if verify_calls[0] < 2:
             return False, "attempt 1 failed"
@@ -1099,6 +1535,9 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
 
     issues = [{"number": 1, "title": "Issue one", "body": "", "labels": []}]
     call_count = [0]
@@ -1160,6 +1599,9 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda exclude=None: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
@@ -1174,6 +1616,9 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     lock_path = tmp_path / ".autoloop.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: False
+    )
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
@@ -1238,3 +1683,580 @@ def test_verify_implementation_timeout_is_failed_attempt(monkeypatch):
     valid, errors = implement_issue.verify_implementation("branch")
     assert valid is False
     assert "timed out" in errors
+
+
+# --- is_branch_empty tests ---
+
+
+def test_is_branch_empty_true_when_zero_commits(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is True
+
+
+def test_is_branch_empty_true_when_command_fails(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is True
+
+
+def test_is_branch_empty_false_when_commits_exist(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "3\n", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert is_branch_empty("autoloop/42-feature") is False
+
+
+# --- Empty branch short-circuit in implement_single_issue ---
+
+
+def test_implement_single_issue_empty_branch_no_retries(monkeypatch, tmp_path):
+    """Empty branch after attempt 1 short-circuits with no retries."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+
+    posted_comments = []
+    monkeypatch.setattr(
+        implement_issue,
+        "post_attempt_failure",
+        lambda n, a, e: posted_comments.append(e),
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 1
+    assert len(posted_comments) == 1
+    assert "No changes were produced" in posted_comments[0]
+    assert "Missing .claude/settings.json" in posted_comments[0]
+
+
+def test_implement_single_issue_empty_branch_posts_diagnostic(monkeypatch, tmp_path, capsys):
+    """Diagnostic message is printed and posted, not lint/test noise."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: True)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(_FAKE_ISSUE)
+    output = capsys.readouterr().out
+    assert "No changes were produced" in output
+    assert "Implementation produced no changes" in output
+
+
+def test_implement_single_issue_nonempty_branch_still_retries(monkeypatch, tmp_path):
+    """Non-empty branch failures (real test/lint errors) retain retry behavior."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    def fake_verify(branch, issue_body=""):
+        return False, "Tests failed:\nsome test output"
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 3
+
+
+# --- Timeout handling in implement_single_issue ---
+
+
+def test_implement_single_issue_timeout_posts_guidance(monkeypatch, tmp_path):
+    """Timeout after attempt 1 posts actionable guidance and short-circuits."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=900))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result(timed_out=True)
+
+    posted_comments = []
+
+    def fake_post_timeout(number, attempt, timeout_seconds):
+        posted_comments.append((number, attempt, timeout_seconds))
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_timeout_failure", fake_post_timeout)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 1
+    assert len(posted_comments) == 1
+    assert posted_comments[0] == (42, 1, 900)
+
+
+def test_implement_single_issue_timeout_prints_message(monkeypatch, tmp_path, capsys):
+    """Timeout prints the appropriate console message."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3, impl_timeout=600))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    monkeypatch.setattr(
+        implement_issue,
+        "implement",
+        lambda issue, previous_errors=None: _claude_result(timed_out=True),
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_timeout_failure", lambda n, a, t: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(_FAKE_ISSUE)
+    output = capsys.readouterr().out
+    assert "timed out after 600s" in output
+    assert "timed out. Flagging needs-human; keeping ready." in output
+
+
+def test_implement_single_issue_non_timeout_failure_still_retries(monkeypatch, tmp_path):
+    """Non-timeout failures (success=False but not timed_out) proceed normally."""
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(max_retries=3))
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    attempt_count = [0]
+
+    def fake_implement(issue, previous_errors=None):
+        attempt_count[0] += 1
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "is_branch_empty", lambda branch: False)
+    monkeypatch.setattr(
+        implement_issue,
+        "verify_implementation",
+        lambda branch, issue_body="": (False, "Tests failed"),
+    )
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    assert attempt_count[0] == 3
+
+
+def test_empty_branch_diagnostic_content():
+    """Verify the diagnostic lists all three probable causes."""
+    assert "No changes were produced" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "Missing .claude/settings.json permissions" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "active Claude Code session" in EMPTY_BRANCH_DIAGNOSTIC
+    assert "inner claude invocation failed to start" in EMPTY_BRANCH_DIAGNOSTIC
+
+
+# --- detect_active_claude_session tests ---
+
+
+def test_detect_active_claude_session_returns_none_when_pgrep_unavailable(monkeypatch):
+    """Detection is inconclusive when pgrep is not installed."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            raise FileNotFoundError("pgrep not found")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/some/project")
+    assert result is None
+
+
+def test_detect_active_claude_session_returns_false_when_no_claude_processes(monkeypatch):
+    """No claude processes running means no session detected."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/some/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_returns_true_when_session_in_same_dir(monkeypatch):
+    """Detects a claude session when its cwd matches the project directory."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/my/project\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_detect_active_claude_session_returns_false_when_session_in_other_dir(monkeypatch):
+    """Claude running in a different directory does not trigger detection."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/other/dir\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_ignores_headless_processes(monkeypatch):
+    """Processes with --dangerously-skip-permissions are headless autoloop calls."""
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "12345 claude --dangerously-skip-permissions -p prompt\n",
+                    "stderr": "",
+                },
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is False
+
+
+def test_detect_active_claude_session_returns_none_when_lsof_unavailable(monkeypatch):
+    """Inconclusive when lsof is not available on macOS."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            raise FileNotFoundError("lsof not found")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is None
+
+
+def test_detect_active_claude_session_linux_proc(monkeypatch, tmp_path):
+    """Linux path uses /proc/<pid>/cwd to resolve working directory."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        implement_issue.os.path, "realpath", lambda p: "/my/project" if "proc" in p else p
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    result = detect_active_claude_session("/my/project")
+    assert result is True
+
+
+def test_main_aborts_when_active_session_detected(monkeypatch, tmp_path, capsys):
+    """main() aborts immediately when an active Claude session is detected."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: True
+    )
+
+    implement_issue.cfg = None
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Active Claude Code session detected" in out
+    assert not lock_path.exists()
+
+
+def test_main_proceeds_when_session_detection_inconclusive(monkeypatch, tmp_path, capsys):
+    """main() proceeds normally when detection returns None (inconclusive)."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "load_config", lambda path=None: _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "detect_active_claude_session", lambda project_dir=None: None
+    )
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda exclude=None: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    implement_issue.cfg = None
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Active Claude Code session" not in out
+    assert "No more ready issues." in out
+
+
+def test_detect_active_claude_session_uses_explicit_path_not_import_cwd(monkeypatch):
+    """Passing an explicit project_dir evaluates against that path, not REPO_DIR."""
+    monkeypatch.setattr(implement_issue.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(implement_issue.os.path, "realpath", lambda p: p)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pgrep":
+            return type("R", (), {"returncode": 0, "stdout": "12345 claude\n", "stderr": ""})()
+        if cmd[0] == "lsof":
+            return type(
+                "R", (), {"returncode": 0, "stdout": "p12345\nn/explicit/path\n", "stderr": ""}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "REPO_DIR", "/import/time/cwd")
+
+    assert detect_active_claude_session("/explicit/path") is True
+    assert detect_active_claude_session("/different/path") is False
+
+
+def test_main_passes_cfg_project_dir_to_detect_active_claude_session(monkeypatch, tmp_path, capsys):
+    """main() passes cfg.project_dir, not REPO_DIR or None."""
+    lock_path = tmp_path / ".autoloop.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    cfg_project = tmp_path / "cfg_project"
+    cfg_project.mkdir()
+    monkeypatch.setattr(
+        implement_issue,
+        "load_config",
+        lambda path=None: _test_cfg(project_dir=str(cfg_project)),
+    )
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda exclude=None: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
+
+    import_time_repo = tmp_path / "import_time_repo"
+    import_time_repo.mkdir()
+    monkeypatch.setattr(implement_issue, "REPO_DIR", import_time_repo)
+
+    captured_dirs = []
+
+    def fake_detect(project_dir=None):
+        captured_dirs.append(project_dir)
+        return False
+
+    monkeypatch.setattr(implement_issue, "detect_active_claude_session", fake_detect)
+
+    implement_issue.cfg = None
+    implement_issue.main()
+
+    assert len(captured_dirs) == 1
+    assert captured_dirs[0] == str(cfg_project), "main() must pass cfg.project_dir, not REPO_DIR"
+    assert captured_dirs[0] != str(import_time_repo), "main() must not use module-level REPO_DIR"
+
+
+# --- truncate_spec tests ---
+
+
+def test_truncate_spec_no_truncation_when_under_limit():
+    body = "Short body"
+    assert truncate_spec(body, 100) == body
+
+
+def test_truncate_spec_no_truncation_when_exactly_at_limit():
+    body = "x" * 50
+    assert truncate_spec(body, 50) == body
+
+
+def test_truncate_spec_truncates_when_over_limit():
+    body = "a" * 100
+    result = truncate_spec(body, 50, "https://github.com/acme-corp/widget/issues/1")
+    assert result.startswith("a" * 50)
+    assert "[Issue body truncated." in result
+    assert "https://github.com/acme-corp/widget/issues/1" in result
+
+
+def test_truncate_spec_preserves_beginning():
+    body = "## Summary\nImportant info\n\n## Context\n" + "x" * 1000
+    result = truncate_spec(body, 40)
+    assert result.startswith("## Summary\nImportant info")
+
+
+def test_truncate_spec_omits_url_when_empty():
+    body = "a" * 100
+    result = truncate_spec(body, 50)
+    assert "[Issue body truncated.]" in result
+    assert "Full issue:" not in result
+
+
+def test_truncate_spec_includes_url_when_provided():
+    body = "a" * 100
+    result = truncate_spec(body, 50, "https://github.com/acme-corp/widget/issues/42")
+    assert "Full issue: https://github.com/acme-corp/widget/issues/42" in result
+
+
+def test_truncate_spec_zero_limit_returns_original():
+    body = "some text"
+    assert truncate_spec(body, 0) == body
+
+
+def test_truncate_spec_negative_limit_returns_original():
+    body = "some text"
+    assert truncate_spec(body, -1) == body
+
+
+# --- build_implementation_prompt applies spec_truncation ---
+
+
+def test_build_implementation_prompt_truncates_large_body(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=50, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    large_body = "a" * 200
+    issue = {"number": 7, "title": "Big issue", "body": large_body}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "a" * 200 not in prompt
+    assert "[Issue body truncated." in prompt
+    assert "https://github.com/acme-corp/widget/issues/7" in prompt
+
+
+def test_build_implementation_prompt_no_truncation_when_body_fits(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=4000, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    body = "Short issue body"
+    issue = {"number": 7, "title": "Small issue", "body": body}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "Short issue body" in prompt
+    assert "[Issue body truncated." not in prompt
+
+
+def test_build_implementation_prompt_truncates_body_plus_comments(monkeypatch, tmp_path):
+    """Truncation applies to the combined body + appended comments."""
+    monkeypatch.setattr(
+        implement_issue,
+        "cfg",
+        _test_cfg(spec_truncation=100, repo="acme-corp/widget"),
+    )
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("# Project\nTest project")
+    monkeypatch.setattr(implement_issue, "REPO_DIR", tmp_path)
+
+    comments_json = json.dumps(
+        {
+            "body": "short body",
+            "comments": [
+                {"body": "Implementation Detail: " + "x" * 200},
+            ],
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return type("R", (), {"returncode": 0, "stdout": comments_json, "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 7, "title": "Issue with comments", "body": "short body"}
+    prompt = implement_issue.build_implementation_prompt(issue)
+
+    assert "[Issue body truncated." in prompt
+    assert "x" * 200 not in prompt

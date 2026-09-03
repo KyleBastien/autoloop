@@ -1,12 +1,55 @@
 # autoloop
 
-Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs — all from a single config file.
+Config-driven AI pipeline that triages GitHub issues, implements them via Claude, and opens PRs. One config file. One command to start.
+
+## Prerequisites
+
+- **Python 3.13+**
+- **uv** (recommended): [install](https://docs.astral.sh/uv/getting-started/installation/) or use pip instead
+- **Node.js 22+**: required by Claude Code CLI
+- **GitHub CLI (`gh`)**: [install](https://cli.github.com/) then run `gh auth login`
+- **Claude Code CLI (`claude`)**: `npm install -g @anthropic-ai/claude-code` (requires Claude Max or Pro subscription)
+- A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
+
+## TLDR: First PR in 5 Minutes
+
+```bash
+uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+cd your-repo
+autoloop init --repo your-org/your-repo --verify-cmd "npm test"
+autoloop doctor                           # verify environment
+# Create a GitHub issue with a clear title and acceptance criteria
+autoloop triage                           # evaluates and labels the issue
+autoloop implement                        # builds it, opens a PR
+# Review and merge the PR
+```
+
+That's it. Read on for [configuration](#configuration-reference), [scheduling](#running-unattended), and [issue writing tips](#4-create-an-issue).
+
+---
+
+## Platform Support
+
+- **macOS**: fully supported (local mode)
+- **Linux**: fully supported (local + unattended/VPS mode)
+- **Windows**: not supported
+
+## How It Works
+
+| | Local mode | Unattended mode |
+|---|---|---|
+| Where | Your machine | VPS / remote server |
+| Trigger | You run the command | systemd timer / cron |
+| Gate | You review + merge PRs | Same. You're still the human gate |
+| Best for | Evaluating autoloop, small projects | Trusted repos, overnight batch runs |
+
+Most users start local. Graduate to unattended when you trust it.
 
 ## Installation
 
 ### As a CLI tool (recommended)
 
-Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.1.7`):
+Replace `<tag>` with the latest version from the [releases page](https://github.com/Sanctum-Origo-Systems/autoloop/tags) (e.g. `v0.3.5`):
 
 ```bash
 uv tool install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
@@ -27,11 +70,17 @@ pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@<tag>
 ### Upgrading
 
 ```bash
-# uv
+# uv for a specific version
 uv tool install --force git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>
 
-# pip
+# uv for the latest version
+uv tool install --force git+https://github.com/Sanctum-Origo-Systems/autoloop@main
+
+# pip for a specific version
 pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@v<new-version>
+
+# pip for the latest version
+pip install --upgrade git+https://github.com/Sanctum-Origo-Systems/autoloop@main
 ```
 
 Verify: `autoloop version`
@@ -57,7 +106,7 @@ Contributions are currently limited to collaborators. A public issue board for i
 - A GitHub repo with a test command (`pytest`, `npm test`, `make test`, etc.)
 - **Optional — Linear backlog:** a Linear API key (`LINEAR_API_KEY`) and team key if you set `source = "linear"` (see [Using Linear](#using-linear))
 
-## Quick Start
+## Quick Start (Local Mode)
 
 ### 1. Initialize your repo
 
@@ -84,7 +133,34 @@ git commit -m "feat: add autoloop pipeline"
 git push
 ```
 
-### 2. Configure
+### Local Mode Notes
+
+- `autoloop init` scaffolds the required `.claude/settings.json` permissions.
+  If you skipped init, create one manually (see template).
+- Do not run `autoloop implement` while a Claude Code session is open in the
+  same project directory. Close it or move the session to a parent folder.
+
+### 2. Verify your environment
+
+```bash
+autoloop doctor
+```
+
+Checks that everything is set up correctly before your first run:
+
+```
+✓ autoloop.toml found and valid
+✓ .claude/settings.json found
+✓ claude CLI installed (v2.1.160)
+✓ claude CLI authenticated
+✓ gh CLI installed and authenticated
+✓ No active Claude Code session conflict
+✓ verify_cmd passes ("pytest" → exit 0)
+```
+
+Each check reports pass or fail with a fix suggestion. Exit code 0 if all pass, 1 if any fail. Run this once after `autoloop init` and again if implementations start failing unexpectedly.
+
+### 3. Configure
 
 Review `autoloop.toml` and adjust for your project. Key fields:
 
@@ -98,7 +174,7 @@ max_retries = 3                   # Retry attempts per issue
 protected_paths = ["autoloop.toml"]  # Files the bot must never modify
 ```
 
-### 3. Create an issue
+### 4. Create an issue
 
 Write a GitHub issue with clear structure. Autoloop works best with specific, testable issues.
 
@@ -125,11 +201,11 @@ Without --verbose, only the summary count is shown.
 Make the CLI better. It should show more stuff.
 ```
 
-You don't need to list which files to modify — triage identifies the relevant files automatically from the issue description and codebase. Including file paths is helpful if you know them, but not required.
+You don't need to list which files to modify. Triage identifies the relevant files automatically from the issue description and codebase. Including file paths is helpful if you know them, but not required.
 
 Issues can be any size. If an issue is too large, triage automatically decomposes it into ordered sub-issues with dependency tracking.
 
-### 4. Triage
+### 5. Triage
 
 ```bash
 autoloop triage
@@ -140,11 +216,11 @@ Triage evaluates each untriaged issue and applies a label:
 | Label | Meaning |
 |-------|---------|
 | `ready` | Template complete, small enough to implement |
-| `needs-decomposition` | Template complete but too large — sub-issues are created automatically |
+| `needs-decomposition` | Template complete but too large. Sub-issues are created automatically |
 | `rejected` | Missing required fields (autoloop attempts to auto-fix and re-triage once) |
 | `needs-human` | Touches protected paths or requires human judgment |
 
-### 5. Implement
+### 6. Implement
 
 ```bash
 autoloop implement              # implements the top ready issue
@@ -160,21 +236,21 @@ For each issue, autoloop:
 5. Retries on failure (up to `max_retries`)
 6. Opens a PR with run stats (duration, cost, tokens)
 
-### 6. Review and merge
+### 7. Review and merge
 
-Autoloop opens the PR but never merges it. You review and merge — that's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
+Autoloop opens the PR but never merges it. You review and merge. That's the human gate. On merge, the CI workflow cleans up labels and auto-closes parent issues when all sub-issues are complete.
 
-### 7. Fix broken PRs
+### 8. Fix broken PRs
 
 ```bash
 autoloop fix-pr 42
 ```
 
 Detects and fixes:
-- **Stale base** — rebases on main
-- **Merge conflicts** — rebases, Claude resolves conflicts
-- **Lint failures** — runs ruff fix/format, falls back to Claude
-- **Test failures** — Claude fixes the code, re-verifies
+- **Stale base**: rebases on main
+- **Merge conflicts**: rebases, Claude resolves conflicts
+- **Lint failures**: runs ruff fix/format, falls back to Claude
+- **Test failures**: Claude fixes the code, re-verifies
 
 ## Creating Issues from a Spec
 
@@ -182,14 +258,12 @@ Detects and fixes:
 autoloop plan --from-spec path/to/spec.md
 ```
 
-Parses a markdown spec or PRD file for `## Enhancement N:` sections and creates a GitHub issue for each one.
-
-> **Note:** The parser currently uses `## Enhancement` as the section marker. This is a legacy naming convention — sections can describe features, bug fixes, refactors, or any task. A future version will support a more semantically correct marker like `## Task`.
+Parses a markdown spec or PRD file for `## Task N:` sections and creates a GitHub issue for each one. The legacy `## Enhancement` tag is also supported for backward compatibility.
 
 Example spec format:
 
 ```markdown
-## Enhancement 1: Add user authentication
+## Task 1: Add user authentication
 
 Add login and logout endpoints with session management.
 
@@ -197,18 +271,20 @@ Add login and logout endpoints with session management.
 
 **File:** `src/api/auth.py`
 
-## Enhancement 2: Add rate limiting
+## Task 2: Add rate limiting
 
 **Problem:** API allows unlimited requests.
 
 **File:** `src/api/middleware.py`
 ```
 
-The `**File:**` section is optional — include it if you know which files need modification, but the builder will determine the correct files from the description if omitted.
+The `**File:**` section is optional. Include it if you know which files need modification. The builder will determine the correct files from the description if omitted.
 
 Each section becomes one issue. Triage then handles decomposition and dependency ordering if any issue is too large.
 
 ## Running Unattended
+
+Once you trust the pipeline, automate it with timers on a Linux VPS.
 
 ### With systemd timers (Linux VPS)
 
@@ -264,7 +340,7 @@ loginctl enable-linger $USER
 systemctl --user list-timers | grep myapp
 ```
 
-The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix — it doesn't have to be "autoloop":
+The `timer_prefix` in `autoloop.toml` controls which timers `autoloop status` looks for. Name your timers with your app's prefix. It doesn't have to be "autoloop":
 
 ```toml
 # If your timers are named myapp-triage.timer / myapp-implement.timer:
@@ -274,7 +350,7 @@ timer_prefix = "myapp"
 # timer_prefix = "autoloop"
 ```
 
-This supports multiple repos on the same VPS — each repo has its own `autoloop.toml` with a distinct prefix.
+This supports multiple repos on the same VPS. Each repo has its own `autoloop.toml` with a distinct prefix.
 
 ### Mobile workflow
 
@@ -309,21 +385,21 @@ Install the MCP server on the VPS with `uv tool install "autoloop[mcp] @ git+htt
 
 Two mobile apps, two roles:
 
-- **GitHub mobile app** ([iOS](https://apps.apple.com/app/github/id1477376905) / [Android](https://play.google.com/store/apps/details?id=com.github.android)) — review diffs, approve, and merge PRs
-- **Claude mobile app** ([iOS](https://apps.apple.com/app/claude/id6473753684) / [Android](https://play.google.com/store/apps/details?id=com.anthropic.claude)) — tap **Code** at the bottom, select your VPS session from the list, and use the chat to invoke autoloop commands
+- **GitHub mobile app** ([iOS](https://apps.apple.com/app/github/id1477376905) / [Android](https://play.google.com/store/apps/details?id=com.github.android)): review diffs, approve, and merge PRs
+- **Claude mobile app** ([iOS](https://apps.apple.com/app/claude/id6473753684) / [Android](https://play.google.com/store/apps/details?id=com.anthropic.claude)): tap **Code** at the bottom, select your VPS session from the list, and use the chat to invoke autoloop commands
 
 Example workflow from your phone:
 
 1. **GitHub app**: review and merge a PR
-2. **Claude app**: "Implement the next ready issue" — autoloop picks the top issue and starts working
-3. **Claude app**: "Check autoloop status" — see progress, ready issue count, next timer
-4. **Claude app**: "Fix PR 42" — rebases and resolves conflicts or failing checks
+2. **Claude app**: "Implement the next ready issue". Autoloop picks the top issue and starts working
+3. **Claude app**: "Check autoloop status". See progress, ready issue count, next timer
+4. **Claude app**: "Fix PR 42". Rebases and resolves conflicts or failing checks
 
 ## Configuration Reference
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `repo` | — | GitHub `owner/repo` (required; also the PR repo when `source = "linear"`) |
+| `repo` | (required) | GitHub `owner/repo` (also the PR repo when `source = "linear"`) |
 | `source` | `github` | Issue source backend: `github` or `linear` |
 | `linear_team` | — | Linear team key (e.g. `ENG`), required when `source = "linear"` |
 | `triage_model` | `sonnet` | Claude model for triage |
@@ -331,14 +407,15 @@ Example workflow from your phone:
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
 | `triage_timeout` | `90` | Triage timeout (seconds) |
 | `test_timeout` | `120` | Test command timeout (seconds) |
-| `pr_reviewer` | — | GitHub username assigned to PRs |
+| `pr_reviewer` | (none) | GitHub username assigned to PRs |
 | `max_retries` | `3` | Retry attempts per issue |
-| `max_story_points` | `2` | Issues above this are decomposed |
+| `max_story_points` | `3` | Issues above this are decomposed |
 | `verify_cmd` | `uv run pytest` | Command to validate implementation |
 | `test_file_pattern` | `^tests/.*\.py$` | Regex a changed file must match to count as a test (JS/TS: `\.(test\|spec)\.[jt]sx?$`) |
 | `lint_command` | `uv run ruff check && uv run ruff format --check` | Lint check command |
 | `timer_prefix` | `autoloop` | Systemd timer prefix for status detection (use your app name, e.g. `myapp`) |
 | `protected_paths` | `["autoloop/"]` | Paths the bot must never modify |
+| `test_gate_skip_types` | `["refactor", "docs", "chore"]` | Issue types that skip the "must add test files" verification check |
 | `triage_labels` | `["ready", "rejected", ...]` | Labels that indicate an issue has been triaged |
 
 All fields can be overridden by environment variables (e.g. `AUTOLOOP_IMPL_MODEL`, `AUTOLOOP_TIMEOUT`, `AUTOLOOP_SOURCE`, `AUTOLOOP_LINEAR_TEAM`).
@@ -368,6 +445,7 @@ Only one source is active per repo. Everything else (`triage`, `implement`, `sta
 | Command | Description |
 |---------|-------------|
 | `autoloop init` | Scaffold autoloop onto a new repo |
+| `autoloop doctor` | Verify environment and configuration |
 | `autoloop plan` | Create issues from a spec file |
 | `autoloop triage` | Triage untriaged issues |
 | `autoloop implement` | Implement top ready issue |
