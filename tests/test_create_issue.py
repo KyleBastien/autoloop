@@ -735,3 +735,11 @@ def test_suggest_and_spec_prompts_forbid_inventing_symbols_and_naming_customers(
     for prompt in (SUGGEST_PROMPT, SPEC_TO_ISSUE_PROMPT):
         assert "Name only functions, files and symbols that exist in the repo today" in prompt
         assert "Never name a real customer" in prompt
+
+
+def test_suggest_and_spec_prompts_refuse_claims_about_existing_code():
+    from autoloop.create_issue import SPEC_TO_ISSUE_PROMPT, SUGGEST_PROMPT
+
+    for prompt in (SUGGEST_PROMPT, SPEC_TO_ISSUE_PROMPT):
+        assert "never how existing code already works" in prompt
+        assert "do not repeat such a claim from the source material" in prompt

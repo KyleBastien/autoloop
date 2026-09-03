@@ -1786,6 +1786,8 @@ def test_sub_issue_prompt_includes_verify_and_lint_placeholders():
 
 def test_sub_issue_prompt_renders_with_node_commands():
     rendered = SUB_ISSUE_PROMPT.format(
+        tree="src/widget.ts",
+        claude_md="# Project",
         parent_number=1,
         parent_summary="Parent summary",
         step_title="Add widget",
@@ -1801,6 +1803,8 @@ def test_sub_issue_prompt_renders_with_node_commands():
 
 def test_sub_issue_prompt_renders_with_python_commands():
     rendered = SUB_ISSUE_PROMPT.format(
+        tree="src/widget.ts",
+        claude_md="# Project",
         parent_number=1,
         parent_summary="Parent summary",
         step_title="Add parser",
@@ -1835,6 +1839,9 @@ def test_suggest_sub_issue_fields_passes_project_commands(monkeypatch):
 
     monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "autoloop.triage_issues.load_project_context", lambda: ("src/app.js", "# Project")
+    )
 
     step = {"title": "Add feature", "files": ["src/app.js"], "why_first": "needed"}
     suggest_sub_issue_fields(10, "parent summary", step, cfg)
@@ -2055,3 +2062,71 @@ def test_sub_issue_prompt_gives_each_criterion_one_owner():
     from autoloop.triage_issues import SUB_ISSUE_PROMPT
 
     assert "Each criterion belongs to exactly one sub-issue" in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_carries_repo_context():
+    assert "{tree}" in SUB_ISSUE_PROMPT
+    assert "{claude_md}" in SUB_ISSUE_PROMPT
+
+
+def test_suggest_sub_issue_fields_shows_the_repo_it_writes_criteria_about(monkeypatch):
+    cfg = _cfg()
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps({"expected_behavior": "works", "acceptance_criteria": ["c"]}),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "autoloop.triage_issues.load_project_context",
+        lambda: ("src/only_real_module.py", "# Conventions live here"),
+    )
+
+    step = {"title": "Add feature", "files": ["src/only_real_module.py"], "why_first": "needed"}
+    suggest_sub_issue_fields(10, "parent summary", step, cfg)
+
+    assert "src/only_real_module.py" in captured["prompt"]
+    assert "# Conventions live here" in captured["prompt"]
+
+
+def test_suggest_sub_issue_fields_bounds_the_repo_context(monkeypatch):
+    cfg = _cfg(tree_truncation=20)
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return ClaudeResult(
+            json.dumps({"expected_behavior": "works", "acceptance_criteria": ["c"]}),
+            0.01,
+            100,
+            50,
+            0,
+            True,
+        )
+
+    monkeypatch.setattr("autoloop.triage_issues.run_claude", fake_run_claude)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "autoloop.triage_issues.load_project_context", lambda: ("t" * 500, "c" * 500)
+    )
+
+    step = {"title": "Add feature", "files": [], "why_first": "needed"}
+    suggest_sub_issue_fields(10, "parent summary", step, cfg)
+
+    assert "t" * 20 in captured["prompt"]
+    assert "t" * 21 not in captured["prompt"]
+    assert "c" * 21 not in captured["prompt"]
+
+
+def test_sub_issue_prompt_refuses_to_carry_forward_a_claim_about_existing_code():
+    assert "never how existing code already works" in SUB_ISSUE_PROMPT
+    assert "do not repeat such a claim from the source material" in SUB_ISSUE_PROMPT

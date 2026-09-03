@@ -145,6 +145,12 @@ Respond with JSON only:
 SUB_ISSUE_PROMPT = """\
 Generate structured issue fields for this sub-issue of a decomposed parent.
 
+Project structure:
+{tree}
+
+CLAUDE.md:
+{claude_md}
+
 Parent issue: #{parent_number}
 Parent summary: {parent_summary}
 
@@ -167,6 +173,7 @@ Rules:
 - Do not include generic criteria like "tests pass" or "lint clean".
 - Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
 - Name only functions, files and symbols that exist in the repo today, or describe the behavior without naming one. Never hedge with "or equivalent" — a criterion naming a symbol that does not exist cannot be verified.
+- State the behavior a criterion requires, never how existing code already works. Do not tell the implementer to mirror an existing pattern, and do not repeat such a claim from the source material — it may be wrong, and a criterion resting on it cannot be met.
 - Never name a real customer, company or person, in the criteria or in the test data they describe. Describe the shape of the case instead.
 - Each criterion belongs to exactly one sub-issue. If two steps would share one, merge the steps or give it to one and name it out of scope in the other.
 - Reference function names and modules, not line numbers.
@@ -547,7 +554,10 @@ def suggest_sub_issue_fields(
         return None
 
     why = step.get("why_first") or step.get("why_after", "")
+    tree, claude_md = load_project_context()
     prompt = SUB_ISSUE_PROMPT.format(
+        tree=tree[: cfg.tree_truncation],
+        claude_md=claude_md[: cfg.tree_truncation],
         parent_number=parent_number,
         parent_summary=parent_summary,
         step_title=step["title"],

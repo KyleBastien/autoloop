@@ -8,6 +8,8 @@
 - Triage defers an issue whose dependencies are still open, instead of reaching a terminal verdict against a body that cannot be finished yet
 - Generated criteria may not name symbols that do not exist, hedge with "or equivalent", or name a real customer
 - Each acceptance criterion is owned by exactly one sub-issue
+- Sub-issue criteria are written with the project tree and CLAUDE.md in view, so the rule against naming symbols that do not exist is one the generator can actually follow
+- Generated criteria state required behavior rather than asserting how existing code works, and never carry such a claim forward from the source material
 - Triage routes non-code work to `needs-human` instead of `ready`, so the
   implement pipeline is never handed work it cannot express as a diff
 - Decomposition marks non-code steps `code_work: false`; those sub-issues are
