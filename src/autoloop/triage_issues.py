@@ -161,6 +161,13 @@ Reason for ordering: {step_reason}
 Project verification command: {verify_cmd}
 Project lint command: {lint_cmd}
 
+You are running in the project directory and can read and search it.
+Before a criterion names an existing function, file or behavior:
+grep for it and confirm it is really there.
+This includes anything the parent issue asserts.
+If it is not there, state the behavior the criterion requires instead of naming it.
+Search only for that; answer everything else directly.
+
 Respond with JSON only:
 {{
   "expected_behavior": "specific, testable description",
@@ -594,6 +601,12 @@ def create_sub_issues(
             expected = fields.get("expected_behavior") or step["title"]
             extra_criteria = "\n".join(fields.get("acceptance_criteria", []))
         else:
+            logging.warning(
+                "No criteria generated for sub-issue %r of %s — filing it with its title as the "
+                "expected behavior and nothing to verify against. Check the triage timeout.",
+                step["title"],
+                src.ref(parent_number),
+            )
             expected = step["title"]
             extra_criteria = ""
 

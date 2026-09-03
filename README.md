@@ -422,7 +422,7 @@ Example workflow from your phone:
 | `triage_model` | `sonnet` | Claude model for triage |
 | `impl_model` | `claude-opus-4-6[1m]` | Claude model for implementation |
 | `impl_timeout` | `900` | Implementation timeout (seconds) |
-| `triage_timeout` | `90` | Triage timeout (seconds) |
+| `triage_timeout` | `300` | Triage timeout (seconds). Triage calls may verify claims against the repo, which costs turns |
 | `test_timeout` | `120` | Test command timeout (seconds) |
 | `pr_reviewer` | (none) | GitHub username assigned to PRs |
 | `max_retries` | `3` | Retry attempts per issue |

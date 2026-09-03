@@ -20,7 +20,7 @@ class AutoLoopConfig:
     triage_model: str = "sonnet"
     impl_model: str = "claude-opus-4-6[1m]"
     impl_timeout: int = 900
-    triage_timeout: int = 90
+    triage_timeout: int = 300
     test_timeout: int = 120
     pr_reviewer: str = "andywidjaja"
     max_retries: int = 3

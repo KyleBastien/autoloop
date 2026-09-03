@@ -46,7 +46,7 @@ impl_model = "claude-opus-4-6[1m]"
 
 # Timeouts (seconds)
 impl_timeout = 900
-triage_timeout = 90
+triage_timeout = 300
 test_timeout = 120
 
 # GitHub

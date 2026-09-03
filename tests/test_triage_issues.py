@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -2130,3 +2131,51 @@ def test_suggest_sub_issue_fields_bounds_the_repo_context(monkeypatch):
 def test_sub_issue_prompt_refuses_to_carry_forward_a_claim_about_existing_code():
     assert "never how existing code already works" in SUB_ISSUE_PROMPT
     assert "do not repeat such a claim from the source material" in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_tells_the_model_to_verify_claims_about_existing_code():
+    assert "grep for it and confirm it is really there" in SUB_ISSUE_PROMPT
+    assert "This includes anything the parent issue asserts." in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_keeps_verification_narrow():
+    assert "Search only for that" in SUB_ISSUE_PROMPT
+
+
+def test_create_sub_issues_warns_when_a_sub_issue_gets_no_criteria(monkeypatch, caplog):
+    cfg = _cfg()
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
+
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Add widget", "points": 2, "depends_on": [], "files": []}
+        ]
+    }
+    with caplog.at_level(logging.WARNING):
+        triage_issues.create_sub_issues(10, result, cfg, "parent summary")
+
+    assert "No criteria generated" in caplog.text
+    assert "Add widget" in caplog.text
+
+
+def test_create_sub_issues_stays_quiet_when_criteria_come_back(monkeypatch, caplog):
+    cfg = _cfg()
+    src = _FakeSrc()
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    monkeypatch.setattr(
+        triage_issues,
+        "suggest_sub_issue_fields",
+        lambda *a, **k: {"expected_behavior": "works", "acceptance_criteria": ["c"]},
+    )
+
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Add widget", "points": 2, "depends_on": [], "files": []}
+        ]
+    }
+    with caplog.at_level(logging.WARNING):
+        triage_issues.create_sub_issues(10, result, cfg, "parent summary")
+
+    assert "No criteria generated" not in caplog.text
