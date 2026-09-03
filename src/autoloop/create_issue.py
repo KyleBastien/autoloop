@@ -145,6 +145,8 @@ Rules:
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean" — those are added automatically.
 - Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
+- Name only functions, files and symbols that exist in the repo today, or describe the behavior without naming one. Never hedge with "or equivalent" — a criterion naming a symbol that does not exist cannot be verified.
+- Never name a real customer, company or person, in the criteria or in the test data they describe. Describe the shape of the case instead.
 """
 
 
@@ -212,6 +214,8 @@ Rules:
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean" — those are added automatically.
 - Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
+- Name only functions, files and symbols that exist in the repo today, or describe the behavior without naming one. Never hedge with "or equivalent" — a criterion naming a symbol that does not exist cannot be verified.
+- Never name a real customer, company or person, in the criteria or in the test data they describe. Describe the shape of the case instead.
 - deps should contain "Depends on: #N" if the spec mentions dependencies, else empty string.
 """
 

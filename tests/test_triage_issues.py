@@ -1956,3 +1956,102 @@ def test_sub_issue_body_omits_build_criteria_for_non_code_work():
     assert "New unit tests pass" not in ops_body
     assert "uv run pytest" not in ops_body
     assert "Ticket exists and links the source thread" in ops_body
+
+
+class _DepSrc:
+    def __init__(self, issues, states):
+        self._issues = issues
+        self._states = states
+        self.state_lookups = []
+
+    def list_issues(self, *, labels=None, state="open", limit=50):
+        return self._issues
+
+    def get_state(self, number):
+        self.state_lookups.append(str(number))
+        return self._states.get(str(number), "OPEN")
+
+
+def _untriaged(monkeypatch, issues, states):
+    src = _DepSrc(issues, states)
+    monkeypatch.setattr(triage_issues, "get_source", lambda c: src)
+    return triage_issues.list_untriaged_issues(_cfg()), src
+
+
+def test_list_untriaged_issues_defers_an_issue_with_an_open_dependency(monkeypatch):
+    issues = [{"number": 2, "title": "B", "body": "Depends on: #1", "labels": []}]
+
+    result, _src = _untriaged(monkeypatch, issues, {"1": "OPEN"})
+
+    assert result == []
+
+
+def test_list_untriaged_issues_admits_it_once_the_dependency_closes(monkeypatch):
+    issues = [{"number": 2, "title": "B", "body": "Depends on: #1", "labels": []}]
+
+    result, _src = _untriaged(monkeypatch, issues, {"1": "CLOSED"})
+
+    assert [i["number"] for i in result] == [2]
+
+
+def test_list_untriaged_issues_admits_an_issue_with_no_dependencies(monkeypatch):
+    issues = [{"number": 3, "title": "C", "body": "no deps here", "labels": []}]
+
+    result, src = _untriaged(monkeypatch, issues, {})
+
+    assert [i["number"] for i in result] == [3]
+    assert src.state_lookups == []
+
+
+def test_list_untriaged_issues_admits_when_the_dependency_state_is_unreadable(monkeypatch):
+    issues = [{"number": 2, "title": "B", "body": "Depends on: #1", "labels": []}]
+
+    result, _src = _untriaged(monkeypatch, issues, {"1": ""})
+
+    assert [i["number"] for i in result] == [2]
+
+
+def test_list_untriaged_issues_defers_when_any_dependency_is_open(monkeypatch):
+    issues = [{"number": 3, "title": "C", "body": "Depends on: #1, Depends on: #2", "labels": []}]
+
+    result, _src = _untriaged(monkeypatch, issues, {"1": "CLOSED", "2": "OPEN"})
+
+    assert result == []
+
+
+def test_list_untriaged_issues_defers_a_linear_dependency(monkeypatch):
+    issues = [{"number": "ENG-9", "title": "B", "body": "Depends on: ENG-4", "labels": []}]
+
+    result, _src = _untriaged(monkeypatch, issues, {"ENG-4": "OPEN"})
+
+    assert result == []
+
+
+def test_list_untriaged_issues_skips_the_dependency_check_for_a_labelled_issue(monkeypatch):
+    issues = [
+        {
+            "number": 2,
+            "title": "B",
+            "body": "Depends on: #1",
+            "labels": [{"name": "ready"}],
+        }
+    ]
+
+    result, src = _untriaged(monkeypatch, issues, {"1": "OPEN"})
+
+    assert result == []
+    assert src.state_lookups == []
+
+
+def test_sub_issue_prompt_forbids_inventing_symbols_and_naming_customers():
+    from autoloop.triage_issues import SUB_ISSUE_PROMPT
+
+    assert "Name only functions, files and symbols that exist in the repo today" in SUB_ISSUE_PROMPT
+    assert "or equivalent" in SUB_ISSUE_PROMPT
+    assert "Never name a real customer" in SUB_ISSUE_PROMPT
+
+
+def test_sub_issue_prompt_gives_each_criterion_one_owner():
+    from autoloop.triage_issues import SUB_ISSUE_PROMPT
+
+    assert "Each criterion belongs to exactly one sub-issue" in SUB_ISSUE_PROMPT

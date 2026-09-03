@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from autoloop.claude_runner import ClaudeResult, run_claude
 from autoloop.config import REPO_DIR
 from autoloop.create_issue import build_issue_body
-from autoloop.implement_issue import detect_issue_type
+from autoloop.implement_issue import dependencies_closed, detect_issue_type
 from autoloop.sources import get_source
 
 LOG_FILE = REPO_DIR / "autoloop" / "run_history.jsonl"
@@ -166,6 +166,9 @@ Rules:
 - Acceptance criteria must be verifiable by running a test or command.
 - Do not include generic criteria like "tests pass" or "lint clean".
 - Each criterion must be falsifiable by observable behavior. "X is called with Y" is satisfied by asserting on a mock and proves nothing; name the output the caller sees instead.
+- Name only functions, files and symbols that exist in the repo today, or describe the behavior without naming one. Never hedge with "or equivalent" — a criterion naming a symbol that does not exist cannot be verified.
+- Never name a real customer, company or person, in the criteria or in the test data they describe. Describe the shape of the case instead.
+- Each criterion belongs to exactly one sub-issue. If two steps would share one, merge the steps or give it to one and name it out of scope in the other.
 - Reference function names and modules, not line numbers.
 - Reference the project's verify command ("{verify_cmd}") in acceptance criteria, not hardcoded tool names.
 - Reference the project's lint command ("{lint_cmd}") in acceptance criteria, or omit lint criteria if empty.
@@ -429,11 +432,15 @@ def load_project_context() -> tuple[str, str]:
 
 
 def list_untriaged_issues(cfg: AutoLoopConfig) -> list[dict]:
-    """Fetch open issues that have no triage labels yet."""
+    """Fetch open issues that have no triage labels yet and no open dependency."""
     triage_labels = set(cfg.triage_labels)
-    issues = get_source(cfg).list_issues(state="open", limit=50)
+    source = get_source(cfg)
+    issues = source.list_issues(state="open", limit=50)
     return [
-        i for i in issues if not any(lbl["name"] in triage_labels for lbl in i.get("labels", []))
+        i
+        for i in issues
+        if not any(lbl["name"] in triage_labels for lbl in i.get("labels", []))
+        and dependencies_closed(i.get("body", "") or "", source)
     ]
 
 

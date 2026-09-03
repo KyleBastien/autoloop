@@ -5,6 +5,9 @@
 - Implement and review prompts enforce falsifiable fixes: no mocking a function the same change adds, both directions tested for a suppressing change, own-output recognized by a marker rather than by display text
 - Generated acceptance criteria must be falsifiable by observable behavior, not satisfiable by asserting on a mock
 - Parent auto-close repeats the parent's own acceptance criteria and states they were not re-verified
+- Triage defers an issue whose dependencies are still open, instead of reaching a terminal verdict against a body that cannot be finished yet
+- Generated criteria may not name symbols that do not exist, hedge with "or equivalent", or name a real customer
+- Each acceptance criterion is owned by exactly one sub-issue
 - Triage routes non-code work to `needs-human` instead of `ready`, so the
   implement pipeline is never handed work it cannot express as a diff
 - Decomposition marks non-code steps `code_work: false`; those sub-issues are

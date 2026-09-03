@@ -727,3 +727,11 @@ def test_suggest_and_spec_prompts_reject_mock_satisfiable_criteria():
     for prompt in (SUGGEST_PROMPT, SPEC_TO_ISSUE_PROMPT):
         assert "falsifiable by observable behavior" in prompt
         assert "satisfied by asserting on a mock" in prompt
+
+
+def test_suggest_and_spec_prompts_forbid_inventing_symbols_and_naming_customers():
+    from autoloop.create_issue import SPEC_TO_ISSUE_PROMPT, SUGGEST_PROMPT
+
+    for prompt in (SUGGEST_PROMPT, SPEC_TO_ISSUE_PROMPT):
+        assert "Name only functions, files and symbols that exist in the repo today" in prompt
+        assert "Never name a real customer" in prompt

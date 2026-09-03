@@ -361,14 +361,19 @@ def get_issue_by_number(number) -> dict | None:
     return get_source(cfg).get_issue(number)
 
 
+CLOSED_OR_UNREADABLE_STATES = ("CLOSED", "")
+
+
+def dependencies_closed(body: str, source) -> bool:
+    return all(
+        source.get_state(dep_num) in CLOSED_OR_UNREADABLE_STATES
+        for dep_num in parse_dependency_numbers(body)
+    )
+
+
 def dependencies_met(issue: dict) -> bool:
     """Check if all issues in Dependencies field are closed."""
-    body = issue.get("body", "") or ""
-    src = get_source(cfg)
-    for dep_num in parse_dependency_numbers(body):
-        if src.get_state(dep_num) not in ("CLOSED", ""):
-            return False
-    return True
+    return dependencies_closed(issue.get("body", "") or "", get_source(cfg))
 
 
 def create_branch(issue: dict) -> str:
