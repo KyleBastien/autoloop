@@ -218,7 +218,13 @@ Triage evaluates each untriaged issue and applies a label:
 | `ready` | Template complete, small enough to implement |
 | `needs-decomposition` | Template complete but too large. Sub-issues are created automatically |
 | `rejected` | Missing required fields (autoloop attempts to auto-fix and re-triage once) |
-| `needs-human` | Touches protected paths or requires human judgment |
+| `needs-human` | Touches protected paths, isn't code work, or requires human judgment |
+
+An issue whose deliverable isn't a change to this repo's code — filing a ticket
+somewhere, sending a message, a decision — goes to `needs-human` however well
+written it is, because implement only succeeds when it produces commits and a
+changed test file. Decomposition marks such steps `code_work: false`; they skip
+the build/test/lint acceptance criteria too.
 
 ### 6. Implement
 

@@ -77,8 +77,13 @@ def build_issue_body(
     context: str,
     verify_cmd: str = _DEFAULT_VERIFY_CMD,
     lint_command: str = _DEFAULT_LINT_CMD,
+    code_work: bool = True,
 ) -> str:
-    """Assemble the markdown issue body from field values."""
+    """Assemble the markdown issue body from field values.
+
+    ``code_work=False`` skips the build/test/lint criteria, which would otherwise
+    read as a requirement to produce a diff.
+    """
     sections = [f"## Summary\n{summary}", f"## Type\n{issue_type}"]
 
     if files:
@@ -92,7 +97,9 @@ def build_issue_body(
 
     sections.append(f"## Expected Behavior\n{expected}")
 
-    criteria_lines = [f"- [ ] {c}" for c in default_acceptance(verify_cmd, lint_command)]
+    criteria_lines = (
+        [f"- [ ] {c}" for c in default_acceptance(verify_cmd, lint_command)] if code_work else []
+    )
     if extra_criteria:
         for line in extra_criteria.split("\n"):
             line = line.strip().lstrip("- ").lstrip("[] ").strip()

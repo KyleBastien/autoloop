@@ -5,6 +5,11 @@
 - Implement and review prompts enforce falsifiable fixes: no mocking a function the same change adds, both directions tested for a suppressing change, own-output recognized by a marker rather than by display text
 - Generated acceptance criteria must be falsifiable by observable behavior, not satisfiable by asserting on a mock
 - Parent auto-close repeats the parent's own acceptance criteria and states they were not re-verified
+- Triage routes non-code work to `needs-human` instead of `ready`, so the
+  implement pipeline is never handed work it cannot express as a diff
+- Decomposition marks non-code steps `code_work: false`; those sub-issues are
+  labelled `needs-human` regardless of size and omit the build/test/lint
+  acceptance criteria
 
 ## v0.3.5
 
