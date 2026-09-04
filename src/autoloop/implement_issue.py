@@ -364,6 +364,10 @@ def get_issue_by_number(number) -> dict | None:
 CLOSED_OR_UNREADABLE_STATES = ("CLOSED", "")
 
 
+def linear_issue_is_closed(issue: dict) -> bool:
+    return issue.get("state") == "CLOSED"
+
+
 def dependencies_closed(body: str, source) -> bool:
     return all(
         source.get_state(dep_num) in CLOSED_OR_UNREADABLE_STATES
@@ -833,6 +837,10 @@ def label_in_review(number):
 
 def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
+    if linear_issue_is_closed(issue):
+        print(f"  #{issue['number']}: already closed, skipping.")
+        return False
+
     try:
         from autoloop.config import touches_protected_path
         from autoloop.create_issue import extract_files_from_spec

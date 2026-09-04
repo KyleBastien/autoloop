@@ -2330,3 +2330,79 @@ def test_review_prompt_asks_whether_a_test_mocks_the_diffs_own_function():
 def test_review_prompt_asks_about_suppressed_output_and_markers():
     assert "suppress an output" in implement_issue.REVIEW_PROMPT
     assert "stable marker" in implement_issue.REVIEW_PROMPT
+
+
+def test_linear_issue_is_closed_reads_the_state_field():
+    assert implement_issue.linear_issue_is_closed({"number": 1, "state": "CLOSED"}) is True
+    assert implement_issue.linear_issue_is_closed({"number": 1, "state": "OPEN"}) is False
+
+
+def test_done_status_reaches_the_guard_as_closed():
+    from autoloop.sources import LinearSource
+
+    node = {
+        "identifier": "DANBOT-529",
+        "title": "t",
+        "description": "",
+        "state": {"type": "completed"},
+        "labels": {"nodes": []},
+    }
+    issue = LinearSource("DANBOT", "key")._to_issue(node)
+    assert implement_issue.linear_issue_is_closed(issue) is True
+
+
+def test_started_statuses_reach_the_guard_as_open():
+    from autoloop.sources import LinearSource
+
+    node = {
+        "identifier": "DANBOT-534",
+        "title": "t",
+        "description": "",
+        "state": {"type": "started"},
+        "labels": {"nodes": []},
+    }
+    issue = LinearSource("DANBOT", "key")._to_issue(node)
+    assert implement_issue.linear_issue_is_closed(issue) is False
+
+
+def test_linear_issue_is_closed_treats_a_missing_state_as_open_for_github():
+    assert implement_issue.linear_issue_is_closed({"number": 1}) is False
+
+
+def test_implement_single_issue_skips_a_closed_linear_issue(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+
+    def explode(*a, **kw):
+        raise AssertionError("closed issue reached the implementation path")
+
+    monkeypatch.setattr(implement_issue, "implement", explode)
+    monkeypatch.setattr(implement_issue, "create_branch", explode)
+
+    assert implement_single_issue({**_FAKE_ISSUE, "state": "CLOSED"}) is False
+
+
+def test_implement_targeted_issue_refuses_a_closed_linear_issue(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "get_issue_by_number", lambda n: {**_FAKE_ISSUE, "state": "CLOSED"}
+    )
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    def explode(*a, **kw):
+        raise AssertionError("closed issue reached the implementation path")
+
+    monkeypatch.setattr(implement_issue, "implement", explode)
+    monkeypatch.setattr(implement_issue, "create_branch", explode)
+
+    assert implement_issue.implement_targeted_issue(42) is False
+
+
+def test_implement_targeted_issue_still_runs_an_open_issue(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg())
+    monkeypatch.setattr(
+        implement_issue, "get_issue_by_number", lambda n: {**_FAKE_ISSUE, "state": "OPEN"}
+    )
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "implement_single_issue", lambda issue, **kw: True)
+
+    assert implement_issue.implement_targeted_issue(42) is True
